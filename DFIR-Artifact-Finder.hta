@@ -81,6 +81,8 @@
   th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
   th:hover{color:#58a6ff}
+  .cgrip{position:absolute;top:0;right:-4px;width:8px;height:100%;cursor:col-resize;z-index:6}
+  .cgrip:hover{background:#58a6ff;filter:alpha(opacity=45);opacity:.45}
   td{max-width:420px}
   tr.sel td{background:#1c2f4a}
   tr.grp td{background:#12233a;font-weight:600;color:#e6edf3;cursor:pointer;border-top:2px solid #30363d}
@@ -179,6 +181,7 @@
         <span class="st st-notool">&mdash; no tool yet</span>
         &nbsp;&middot;&nbsp; [Process] opens the wrapper pre-filled for review; outputs go to _Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;datetime&gt;\ inside the case folder.
         [Open] on a processed row loads the newest output straight back into the wrapper's viewer (downloading the wrapper first if it's missing).
+        Drag a column header's right edge to resize it; double-click the edge to reset all widths.
       </div>
     </div>
 
@@ -193,7 +196,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.2.0";
+var APP_VERSION = "0.2.1";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -230,6 +233,8 @@ var BUSY = false;
 var DETROW = null;
 var qTimer = null;
 var SETTINGS = {};
+var COLW = null;                      // per-column px widths once the user resizes (persisted in settings)
+var DRAG = null;                      // active column-drag state
 
 /* ================= artifact catalog =================
    tier A = cli:true (real CLI launch)   tier B = wrapper exists, no CLI yet (open + clipboard)
@@ -778,6 +783,7 @@ function render(){
   $("tbl").innerHTML=html;
   $("count").innerHTML=nf(rows.length)+" artifact row"+(rows.length===1?"":"s");
   applyFreeze();
+  setupColResize();
   highlightStatusChips();
   window.__visRows=rows;
 }
@@ -785,6 +791,72 @@ function applyFreeze(){
   var sc=$("tblScroll"); if(!sc) return;
   var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
   for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; }
+}
+/* ---------- resizable columns ----------
+   Grip divs on each th (th is already position:relative for the scroll-freeze). Widths live in COLW
+   and are re-applied on every render (innerHTML rebuild wipes the DOM); once the user drags, the
+   table flips to table-layout:fixed + explicit widths so ONE column resizes instead of the whole
+   100%-width table re-flowing. Mouse deltas are divided by the #content zoom (A± / default 0.9)
+   because clientX is viewport px while column widths are pre-zoom layout px. */
+function curZoom(){
+  try{ var el=$("content");
+    var z=parseFloat(el.style.zoom||(el.currentStyle&&el.currentStyle.zoom)||"");
+    if(!z && window.getComputedStyle) z=parseFloat(getComputedStyle(el).zoom);
+    return (z&&z>0)?z:1;
+  }catch(e){ return 1; }
+}
+function setupColResize(){
+  var tbl=$("tbl"); if(!tbl) return;
+  var ths=tbl.getElementsByTagName("th"); if(!ths.length) return;
+  if(COLW && COLW.length===ths.length){
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=COLW[j]+"px";
+  }
+  for(var i=0;i<ths.length;i++){
+    var g=document.createElement("div");
+    g.className="cgrip"; g.setAttribute("data-ci",String(i));
+    g.title="Drag to resize column — double-click to reset all widths";
+    g.onmousedown=gripDown; g.ondblclick=gripReset;
+    ths[i].appendChild(g);
+  }
+}
+function gripDown(e){
+  e=e||window.event;
+  var ci=parseInt(this.getAttribute("data-ci"),10);
+  var tbl=$("tbl"), ths=tbl.getElementsByTagName("th");
+  if(isNaN(ci)||ci<0||ci>=ths.length) return false;
+  if(!COLW || COLW.length!==ths.length){          // first drag: freeze the browser's current widths
+    COLW=[]; for(var i=0;i<ths.length;i++) COLW.push(ths[i].offsetWidth);
+    tbl.style.tableLayout="fixed"; tbl.style.width="auto";
+    for(var j=0;j<ths.length;j++) ths[j].style.width=COLW[j]+"px";
+  }
+  DRAG={ci:ci, x:(e.clientX||0), w:COLW[ci], th:ths[ci], z:curZoom()};
+  document.onmousemove=gripMove; document.onmouseup=gripUp;
+  document.onselectstart=function(){ return false; };
+  if(e.preventDefault) e.preventDefault(); e.returnValue=false;
+  if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true;
+  return false;
+}
+function gripMove(e){
+  e=e||window.event; if(!DRAG) return false;
+  var w=Math.round(DRAG.w+((e.clientX||0)-DRAG.x)/DRAG.z);
+  if(w<40) w=40; if(w>1600) w=1600;
+  COLW[DRAG.ci]=w; DRAG.th.style.width=w+"px";
+  return false;
+}
+function gripUp(){
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null;
+  if(DRAG){ DRAG=null; SETTINGS.colw=COLW; try{ saveSettings(); }catch(e){} }
+}
+function gripReset(e){
+  e=e||window.event;
+  document.onmousemove=null; document.onmouseup=null; document.onselectstart=null; DRAG=null;
+  COLW=null; SETTINGS.colw=null; try{ saveSettings(); }catch(er){}
+  var tbl=$("tbl"); if(tbl){ tbl.style.tableLayout=""; tbl.style.width=""; }
+  render();
+  setStatus("Column widths reset","ok");
+  if(e){ if(e.stopPropagation) e.stopPropagation(); e.cancelBubble=true; }
+  return false;
 }
 function highlightStatusChips(){
   var bs=$("results").getElementsByTagName("button");
@@ -1033,8 +1105,31 @@ function copyNotes(){
 
 /* ---------- command line ----------
    mshta.exe "DFIR-Artifact-Finder.hta" ["<scanRoot>"] [/scan]  */
+/* family fix: <htaId>.commandLine is UNDEFINED in docMode 9+ (IE=edge) — recover the real command
+   line via WMI from the newest mshta.exe process running this .hta (same as the 6 wrappers). */
+function getCommandLine(){
+  try{ var cl=afHta.commandLine+""; if(cl && cl!=="undefined") return cl; }catch(e){}
+  try{
+    var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\");
+    var fn=lp.substring(lp.lastIndexOf("\\")+1).toLowerCase();
+    if(!fn) return "";
+    var loc=new ActiveXObject("WbemScripting.SWbemLocator");
+    var svc=loc.ConnectServer(".","root\\cimv2");
+    var q=svc.ExecQuery("SELECT CommandLine,CreationDate FROM Win32_Process WHERE Name='mshta.exe'");
+    var best="", bestDate="";
+    var en=new Enumerator(q);
+    for(; !en.atEnd(); en.moveNext()){
+      var pr=en.item(); var pcl=(pr.CommandLine==null?"":pr.CommandLine+"");
+      if(pcl.toLowerCase().indexOf(fn)<0) continue;
+      var cd=(pr.CreationDate==null?"":pr.CreationDate+"");
+      if(!best || cd>bestDate){ best=pcl; bestDate=cd; }
+    }
+    return best;
+  }catch(e2){}
+  return "";
+}
 function tokenizeCmdTail(){
-  var cl=""; try{ cl=afHta.commandLine+""; }catch(e){ return []; }
+  var cl=getCommandLine(); if(!cl) return [];
   var m=cl.match(/\.hta"?/i);
   var tail = m ? cl.substring(m.index+m[0].length) : cl;
   var toks=[], i=0, n=tail.length, cur="", inq=false;
@@ -1067,6 +1162,7 @@ function init(){
   TOOLDIR=htaFolder();
   $("tblScroll").onscroll=applyFreeze;
   loadSettings();
+  if(SETTINGS.colw && SETTINGS.colw.length) COLW=SETTINGS.colw;
   if(SETTINGS.lastRoot) $("rootPath").value=SETTINGS.lastRoot;
   if(SETTINGS.bulk) $("optAuto").checked=true;
   if(SETTINGS.showC===false){ $("optShowC").checked=false; SHOWC=false; }
@@ -1105,6 +1201,7 @@ function init(){
   /* click delegation: actions, chips, group headers, rows, copy links, tool-strip get */
   document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
     if(!t||!t.getAttribute) return;
+    if(/\bcgrip\b/.test(t.className+"")) return;   // column-resize grips never bubble into row actions
     var cp=t.getAttribute("data-cp");
     if(cp){ try{ window.clipboardData.setData("Text",cp); setStatus("Copied to clipboard","ok"); }catch(ec){ setStatus("Copy failed","err"); } return; }
     var gk=t.getAttribute("data-get");
