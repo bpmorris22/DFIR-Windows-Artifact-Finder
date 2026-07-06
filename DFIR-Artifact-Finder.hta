@@ -167,6 +167,16 @@
     <div id="log"></div>
   </div>
 
+  <!-- PROCESSED INVENTORY (toolkit-wide, visible before any scan) -->
+  <div class="card hide" id="invCard">
+    <h3>Processed inventory <span class="muted" style="text-transform:none;letter-spacing:0" id="invSub"></span></h3>
+    <div class="scroll" style="max-height:280px"><table id="invTbl"></table></div>
+    <div class="muted" style="font-size:11px;margin-top:6px">
+      Everything under <span class="mono">_Processed</span> next to this app &mdash; newest output date (file count) per host per tool,
+      across all cases. Click a cell to open the newest output in its wrapper; <span class="mono">dir</span> opens the folder.
+    </div>
+  </div>
+
   <!-- RESULTS -->
   <div id="results" class="hide">
     <div class="card">
@@ -215,7 +225,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.4.0";
+var APP_VERSION = "0.5.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -240,7 +250,8 @@ var TOOLDIR = "";
 var ROWS = [];                        // artifact rows (built by scan)
 var MANIFEST = [];                    // artifact-finder-manifest.json entries (new toolkit manifest + legacy scan-root one)
 var PROCCSV = [];                     // csv paths found under the SCAN ROOT's _Processed (old convention, lowercase)
-var TKFILES = [];                     // {p:lowercase path, mtime:"yyyy-mm-dd hh:mm"} under TOOLDIR\_Processed (new convention)
+var TKFILES = [];                     // {p:lowercase path, P:original-case path, ms, mtime:"yyyy-mm-dd hh:mm"} under TOOLDIR\_Processed (new convention)
+var RUNINFO = [];                     // wrapper-written runinfo.json entries (+outDir) — exact artifact↔output binding without the manifest
 var HOST_TOUCHED = false;             // operator typed in the Target-hostname field — never clobber it with guesses
 var LEGACY = {};                      // "host|key" -> legacy csv path
 var HOPEN = {};                       // host group collapse state
@@ -508,8 +519,8 @@ function fmtDT(d){ function p(x){return (x<10?"0":"")+x;}
 function scanToolkitProcessed(){
   /* the toolkit's own _Processed tree is small and ours — FSO recursion is safe here
      (unlike the case tree, which is enumerated with dir /s /b for MAX_PATH reasons) */
-  TKFILES=[];
-  var root=TOOLDIR+"\\_Processed";
+  TKFILES=[]; RUNINFO=[];
+  var root=TOOLDIR+"\\_Processed", riPaths=[];
   if(!folderExists(root)) return;
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   function walk(f,depth){
@@ -517,16 +528,24 @@ function scanToolkitProcessed(){
     try{
       var fe=new Enumerator(f.Files);
       for(; !fe.atEnd(); fe.moveNext()){ var fl=fe.item(), n=fl.Name+"";
+        if(/^runinfo\.json$/i.test(n)){ riPaths.push(fl.Path+""); continue; }
         if(!/\.(csv|html?)$/i.test(n)) continue;
         var ms=0, mt="";
         try{ var d=new Date(fl.DateLastModified); ms=d.getTime(); mt=fmtDT(d); }catch(ed){}
-        TKFILES.push({p:(fl.Path+"").toLowerCase(), ms:ms, mtime:mt});
+        TKFILES.push({p:(fl.Path+"").toLowerCase(), P:fl.Path+"", ms:ms, mtime:mt});
       }
       var se=new Enumerator(f.SubFolders);
       for(; !se.atEnd(); se.moveNext()) walk(se.item(),depth+1);
     }catch(e){}
   }
   try{ walk(fso.GetFolder(root),0); }catch(e){}
+  /* wrapper-written run provenance: runinfo.json is an append-only array per output folder */
+  for(var r=0;r<riPaths.length;r++){
+    try{ var arr=JSON.parse(readUtf8(riPaths[r]));
+      if(arr && arr.length!=null){ var od=parentDir(riPaths[r]);
+        for(var q=0;q<arr.length;q++){ var e2=arr[q]; if(!e2) continue; e2.outDir=od; RUNINFO.push(e2); } } }
+    catch(er){ appendLog("Unreadable runinfo.json ("+riPaths[r]+"): "+er.message); }
+  }
 }
 function newestUnder(dir){
   if(!dir) return null;
@@ -535,6 +554,69 @@ function newestUnder(dir){
     if(t.p.substring(0,ol.length)!==ol) continue;
     if(!best || t.ms>best.ms) best=t; }
   return best;
+}
+
+/* ---------- processed inventory (v0.5) — hosts × tools grid over the toolkit _Processed tree ---------- */
+function invApps(){ var seen={}, out=[];
+  for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i]; if(!c.wrapper) continue;
+    var a=appFor(c); if(!seen[a]){ seen[a]=1; out.push(a); } }
+  return out; }
+function catForApp(app){ var al=String(app).toLowerCase();
+  for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i];
+    if(c.wrapper && appFor(c).toLowerCase()===al) return c; }
+  return null; }
+function renderInventory(){
+  var pref=(TOOLDIR+"\\_processed\\").toLowerCase(), inv={}, hostDisp={}, i;
+  for(i=0;i<TKFILES.length;i++){ var t=TKFILES[i];
+    if(t.p.substring(0,pref.length)!==pref) continue;
+    var segs=t.P.substring(pref.length).split("\\");
+    if(segs.length<3) continue;                       // host\app\file (nested deeper is fine)
+    var hl=segs[0].toLowerCase(), al=segs[1].toLowerCase();
+    if(!hostDisp[hl]) hostDisp[hl]=segs[0];
+    var e=inv[hl+"|"+al]||(inv[hl+"|"+al]={n:0,ms:0,mtime:""});
+    e.n++; if(t.ms>e.ms){ e.ms=t.ms; e.mtime=t.mtime; }
+  }
+  var hlist=[]; for(var h in hostDisp) if(hostDisp.hasOwnProperty(h)) hlist.push(h); hlist.sort();
+  if(!hlist.length){ showEl("invCard",false); return; }
+  var apps=invApps(), used=[];
+  for(i=0;i<apps.length;i++){ var any=false, al2=apps[i].toLowerCase();
+    for(var j=0;j<hlist.length;j++){ if(inv[hlist[j]+"|"+al2]){ any=true; break; } }
+    if(any) used.push(apps[i]); }
+  var hh='<tr><th>Host</th>'; for(i=0;i<used.length;i++) hh+='<th>'+esc(used[i])+'</th>'; hh+='</tr>';
+  var rows=hh;
+  for(var r=0;r<hlist.length;r++){ var hl2=hlist[r];
+    var tr='<tr><td><b>'+esc(hostDisp[hl2])+'</b></td>';
+    for(i=0;i<used.length;i++){ var cell=inv[hl2+"|"+used[i].toLowerCase()];
+      var ref=esc(hostDisp[hl2])+'|'+esc(used[i]);
+      tr+='<td>'+(cell
+        ?('<span class="lnk" data-invopen="'+ref+'" title="Open the newest output in '+esc(used[i])+'-Wrapper">'+esc(cell.mtime||"?")+' ('+cell.n+')</span> <span class="lnk muted" data-invdir="'+ref+'" title="Open this folder in Explorer">dir</span>')
+        :'<span class="muted">&mdash;</span>')+'</td>'; }
+    rows+=tr+'</tr>';
+  }
+  $("invTbl").innerHTML=rows;
+  $("invSub").innerHTML="&mdash; "+nf(hlist.length)+" host"+(hlist.length===1?"":"s")+" &middot; "+esc(TOOLDIR+"\\_Processed");
+  showEl("invCard",true);
+}
+function invOpen(key){
+  var sp=key.split("|"), host=sp[0], app=sp[1];
+  var cat=catForApp(app);
+  if(!cat){ setStatus("No wrapper known for "+app,"err"); return; }
+  var dir=TOOLDIR+"\\_Processed\\"+host+"\\"+app;
+  var target=pickOpenTarget({key:cat.key, cat:cat}, dir);
+  if(!target){ setStatus("No output files found in "+dir,"err"); return; }
+  var hta=WPATH[cat.wrapper]||"";
+  if(!hta){
+    setStatus(cat.wrapper+".hta not found — downloading it first…","muted");
+    if(!getTool(cat,true)) return;
+    hta=WPATH[cat.wrapper]||"";
+    if(!hta){ setStatus("Downloaded "+cat.wrapper+".hta but could not resolve it — see log.","err"); return; }
+  }
+  var cmd='mshta.exe "'+hta+'" "'+target.path+'"';
+  try{ new ActiveXObject("WScript.Shell").Run(cmd,1,false); }
+  catch(e){ setStatus("Could not launch "+cat.wrapper+": "+e.message,"err"); return; }
+  appendLog("Inventory open: "+cmd);
+  setStatus(cat.wrapper+" opened with "+baseName(target.path)
+    +(target.others>0?(" — "+target.others+" more file"+(target.others===1?"":"s")+" in the folder"):""),"ok");
 }
 
 /* ================= SCAN ================= */
@@ -659,6 +741,7 @@ function classify(lstPath){
   }
   loadManifest();
   scanToolkitProcessed();
+  renderInventory();
   guessHostField();
   for(var r=0;r<ROWS.length;r++) computeStatus(ROWS[r]);
   sortRows();
@@ -735,6 +818,14 @@ function computeStatus(row){
     row.status="launch"; row.statusDate=String(best.launchedUtc||"").substring(0,16).replace("T"," ");
     return;
   }
+  // 1b. wrapper-written runinfo.json binding — exact artifact path, survives manifest loss
+  var bestRi=null;
+  for(var q=0;q<RUNINFO.length;q++){ var ri=RUNINFO[q];
+    if(ri.input && String(ri.input).toLowerCase()===pl){
+      if(!bestRi || String(ri.finishedUtc||"")>String(bestRi.finishedUtc||"")) bestRi=ri; } }
+  if(bestRi){ var nb2=newestUnder(bestRi.outDir);
+    if(nb2){ row.status="proc"; row.lastOut=bestRi.outDir;
+      row.statusDate=String(bestRi.finishedUtc||"").substring(0,16).replace("T"," ")||nb2.mtime; return; } }
   // 2. new-convention folder (toolkit _Processed\<host>\<app>) with output — covers wrapper
   //    runs done outside the finder too (same convention family-wide since v0.4)
   var nd=newOutDir(row);
@@ -1079,6 +1170,11 @@ function outDirsNewestFirst(row){
   ents.sort(function(a,b){ var x=String(a.launchedUtc||""), y=String(b.launchedUtc||""); return x<y?1:(x>y?-1:0); });
   for(i=0;i<ents.length;i++){ var d=String(ents[i].outDir), dl=d.toLowerCase();
     if(!seen[dl]){ seen[dl]=1; dirs.push(d); } }
+  // runinfo.json bindings (wrapper-side provenance — exact artifact match)
+  for(i=0;i<RUNINFO.length;i++){ var ri2=RUNINFO[i];
+    if(ri2.input && String(ri2.input).toLowerCase()===pl && ri2.outDir){
+      var rl=ri2.outDir.toLowerCase();
+      if(!seen[rl]){ seen[rl]=1; dirs.push(ri2.outDir); } } }
   // new-convention folder (covers standalone wrapper runs the manifest never saw)
   var nd=newOutDir(row);
   if(nd && !seen[nd.toLowerCase()] && newestUnder(nd)){ seen[nd.toLowerCase()]=1; dirs.push(nd); }
@@ -1200,7 +1296,35 @@ function renderToolStrip(){
       +(p?"":' <span class="lnk" data-get="'+esc(c.key)+'">get</span>')
       +(c.cli?'':' <span class="muted" title="CLI retrofit pending — Process opens it bare with the path on your clipboard">(manual)</span>')+'</span>';
   }
+  /* shared IOC list — every wrapper auto-loads IOC.txt from the toolkit folder at launch */
+  var iocP=TOOLDIR+"\\IOC.txt";
+  if(fileExists(iocP)){
+    var iocN=0;
+    try{ var ls=readUtf8(iocP).split(/\r?\n/);
+      for(var x=0;x<ls.length;x++){ var L=trimStr(ls[x]); if(L && L.charAt(0)!=="#") iocN++; } }catch(ei){}
+    h+='<span class="tk have" title="Shared IOC list — every wrapper auto-loads it at launch ('+esc(iocP)+')">IOC.txt &#10004; '+iocN+' term'+(iocN===1?"":"s")+' <span class="lnk" data-ioc="edit">edit</span></span>';
+  } else {
+    h+='<span class="tk miss" title="No shared IOC list yet — one term per line; every wrapper auto-loads it at launch">IOC.txt missing <span class="lnk" data-ioc="new">create</span></span>';
+  }
   $("toolStrip").innerHTML=h;
+}
+function iocEdit(mode){
+  var p=TOOLDIR+"\\IOC.txt";
+  if(mode==="new" && !fileExists(p)){
+    try{ writeUtf8(p,
+      "# Toolkit IOC list — one term per line, matched case-insensitively by every wrapper in the family.\r\n"
+      +"# Lines starting with # are comments. Keep it case-generic if this toolkit folder is ever shared.\r\n"
+      +"# Examples (delete these):\r\n"
+      +"#   evil.exe\r\n"
+      +"#   203.0.113.7\r\n"
+      +"#   baddomain.example\r\n"); }
+    catch(e){ setStatus("Could not create "+p+": "+e.message,"err"); return; }
+    appendLog("Created toolkit IOC.txt template: "+p);
+  }
+  try{ new ActiveXObject("WScript.Shell").Run('notepad.exe "'+p+'"',1,false); }
+  catch(e2){ setStatus("Could not open Notepad: "+e2.message,"err"); return; }
+  setStatus("IOC.txt opened in Notepad — wrappers pick it up on their next launch.","ok");
+  window.setTimeout(renderToolStrip,4000);   // refresh the term count after a quick edit
 }
 
 /* ---------- export / copy ---------- */
@@ -1294,6 +1418,7 @@ function init(){
   if(SETTINGS.bulk) $("optAuto").checked=true;
   if(SETTINGS.showC===false){ $("optShowC").checked=false; SHOWC=false; }
   renderToolStrip();
+  scanToolkitProcessed(); renderInventory();   // processed inventory is available before any scan
 
   // A± zooms #content only — zooming <body> made the header (and these buttons)
   // slide off-screen (which is what happened when body-zoom widened the header past the window edge).
@@ -1340,6 +1465,14 @@ function init(){
     if(cp){ try{ window.clipboardData.setData("Text",cp); setStatus("Copied to clipboard","ok"); }catch(ec){ setStatus("Copy failed","err"); } return; }
     var gk=t.getAttribute("data-get");
     if(gk){ getTool(CATBYKEY[gk]); return; }
+    var im=t.getAttribute("data-ioc");
+    if(im){ iocEdit(im); return; }
+    var io=t.getAttribute("data-invopen");
+    if(io){ invOpen(io); return; }
+    var idr=t.getAttribute("data-invdir");
+    if(idr){ var ip=idr.split("|");
+      try{ new ActiveXObject("WScript.Shell").Run('explorer.exe "'+TOOLDIR+'\\_Processed\\'+ip[0]+'\\'+ip[1]+'"',1,false); }
+      catch(ei2){ setStatus("Could not open Explorer: "+ei2.message,"err"); } return; }
     var tf=t.getAttribute("data-tf");
     if(tf){ CURTYPE=tf; render(); return; }
     var stf=t.getAttribute("data-stf");
@@ -1453,7 +1586,9 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <ul>
       <li>All processing lands in <code>_Processed\&lt;Hostname&gt;\&lt;App&gt;\</code> <b>next to this app</b> (family convention — the wrappers use the same layout when run standalone). One folder per host per tool; the tools' datetime-stamped filenames keep repeat runs apart.</li>
       <li><b>Target hostname</b> is required before processing. It is guessed from the scan (<code>Collection-&lt;host&gt;-…</code> segments or the folder layout) — overwrite it if wrong. Multi-host scans use each row's own detected host; the field covers rows whose host could not be derived.</li>
-      <li>An append-only manifest (<code>_Processed\artifact-finder-manifest.json</code>) ties every launch to its exact artifact path. Old-convention output (<code>&lt;scanRoot&gt;\_Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;stamp&gt;</code>) is still recognised for status and [Open], never written.</li>
+      <li>An append-only manifest (<code>_Processed\artifact-finder-manifest.json</code>) ties every launch to its exact artifact path, and each wrapper writes a <code>runinfo.json</code> into its output folder after every run — so processed state survives even if the manifest is lost. Old-convention output (<code>&lt;scanRoot&gt;\_Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;stamp&gt;</code>) is still recognised for status and [Open], never written.</li>
+      <li>The <b>Processed inventory</b> card (shown before any scan) is the hosts &times; tools view of that tree across all cases — click a cell to reopen the newest output in its wrapper.</li>
+      <li><b>IOC.txt</b> next to this app (see the toolkit strip — create/edit) is the shared IOC list: one term per line, <code>#</code> comments; every wrapper auto-loads it at launch and merges it into its own IOC/keyword scoring. One paste covers the whole engagement.</li>
     </ul>
     <h3>Command line</h3>
     <p><code>mshta "DFIR-Artifact-Finder.hta" ["&lt;scanRoot&gt;"] [/scan]</code></p>

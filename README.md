@@ -27,6 +27,8 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
    ```
    The wrapper opens in its own window so you can review and start processing there. An opt-in **bulk** checkbox adds `/auto` (process immediately) for launch-many sessions — default **off**.
 3. **Skip what's done** — outputs land in `_Processed\<Hostname>\<App>\` **next to this app** (the mandatory **Target hostname** field names the folder — guessed from the scan, overwrite it if wrong; the wrappers use the same layout when run standalone), and an append-only manifest ties runs back to exact artifact paths, so already-processed evidence shows as **done** on the next scan and isn't re-run by accident. **Open** on a processed row loads the newest output straight back into its wrapper — no reprocessing. Old-convention output (`<scanRoot>\_Processed\<Host>_<Artifact>_<stamp>\`) is still recognised, never written.
+4. **Processed inventory** — a hosts × tools grid over `_Processed`, shown before any scan: newest output date (file count) per host per tool across all cases. Click a cell to reopen the newest output in its wrapper; `dir` opens the folder. Wrappers also append a `runinfo.json` provenance entry after every run, so even standalone runs show up bound to their exact source artifact.
+5. **Shared IOC list** — `IOC.txt` next to this app (create/edit it from the toolkit strip): one term per line, `#` comments; every wrapper auto-loads it at launch, so one paste covers the whole engagement.
 
 ## Quick start
 
