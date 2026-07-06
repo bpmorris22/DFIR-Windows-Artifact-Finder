@@ -196,7 +196,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.0";
+var APP_VERSION = "0.3.1";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -258,8 +258,8 @@ var CATALOG = [
    desc:"Uncurated .sqlite files — open individually in SQLECmd-Wrapper if of interest"},
   {key:"lnk",     name:"LNK files",     outKey:"LNK",       gran:"host",   wrapper:"LECmd-Wrapper",         repo:"LECmd-Wrapper",         cli:true,
    desc:"Shortcut files (.lnk) — parsed with LECmd; weaponized-shortcut / USB / origin triage"},
-  {key:"jump",    name:"Jump lists",    outKey:"JumpLists", gran:"host",   wrapper:"", repo:"", cli:false,
-   desc:"Automatic/Custom destinations — JLECmd wrapper planned"},
+  {key:"jump",    name:"Jump lists",    outKey:"JumpLists", gran:"host",   wrapper:"JLECmd-Wrapper",        repo:"JLECmd-Wrapper",        cli:true,
+   desc:"Automatic/Custom destinations — interactive user activity via JLECmd"},
   {key:"rbin",    name:"Recycle Bin",   outKey:"RecycleBin",gran:"host",   wrapper:"", repo:"", cli:false,
    desc:"$Recycle.Bin contents ($I/$R) — wrapper planned"},
   {key:"usnj",    name:"$UsnJrnl $J",   outKey:"UsnJrnl",   gran:"file",   wrapper:"", repo:"", cli:false,
@@ -277,7 +277,7 @@ var CATBYKEY = {};
 var SQLITE_CURATED = {"history":1,"web data":1,"cookies":1,"login data":1,"places.sqlite":1,"activitiescache.db":1,"downloads.sqlite":1};
 var REG_ROOT = {"system":1,"software":1,"sam":1,"security":1,"default":1};
 /* legacy (pre-finder) output filename hints, per catalog key */
-var LEGACY_PAT = {evtx:/hayabusa/i, pf:/pecmd/i, amcache:/amcache/i, srum:/srum/i, mft:/mftecmd|_mft_/i, sqlite:/sqlecmd/i};
+var LEGACY_PAT = {evtx:/hayabusa/i, pf:/pecmd/i, amcache:/amcache/i, srum:/srum/i, mft:/mftecmd|_mft_/i, sqlite:/sqlecmd/i, jump:/automaticdestinations|customdestinations/i};
 
 /* ---------- tiny helpers ---------- */
 function $(id){ return document.getElementById(id); }
@@ -999,6 +999,8 @@ function pickOpenTarget(row,dir){
     if(sub.length){ sub.sort(); return {path:sub[0], others:sub.length-1}; }
     return null;
   }
+  if(row.key==="jump"){                                        // jump lists: open on Automatic; the JLECmd wrapper auto-pairs the Custom sibling
+    for(i=0;i<csv.length;i++){ if(/_AutomaticDestinations\.csv$/i.test(csv[i].name)) return {path:csv[i].path, others:csv.length-1}; } }
   if(row.key==="srum"){                                        // SRUM: the exfil table is the headline
     for(i=0;i<csv.length;i++){ if(/networkusage/i.test(csv[i].name)) return {path:csv[i].path, others:csv.length-1}; } }
   best=csv[0]; for(i=1;i<csv.length;i++){ if(csv[i].size>best.size) best=csv[i]; }

@@ -14,7 +14,9 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
 | SRUM (`SRUDB.dat`) | [SrumECmd-Wrapper](https://github.com/bpmorris22/SrumECmd-Wrapper) |
 | `$MFT` | [MFTECmd-Wrapper](https://github.com/bpmorris22/MFTECmd-Wrapper) |
 | SQLite databases | [SQLECmd-Wrapper](https://github.com/bpmorris22/SQLECmd-Wrapper) |
-| Registry / LNK / JumpLists / `$Recycle.Bin` | flagged on the board (no wrapper yet) |
+| LNK files | [LECmd-Wrapper](https://github.com/bpmorris22/LECmd-Wrapper) |
+| Jump lists (Automatic/Custom destinations) | [JLECmd-Wrapper](https://github.com/bpmorris22/JLECmd-Wrapper) |
+| Registry / `$Recycle.Bin` / `$UsnJrnl` / SUM / WebCache | flagged on the board (no wrapper yet) |
 
 ## How it works
 
