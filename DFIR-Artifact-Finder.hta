@@ -1,0 +1,1075 @@
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="IE=edge">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>DFIR Artifact Finder</title>
+<HTA:APPLICATION
+  ID="afHta"
+  APPLICATIONNAME="DFIR Artifact Finder"
+  BORDER="thick"
+  CAPTION="yes"
+  SCROLL="auto"
+  SINGLEINSTANCE="no"
+  SHOWINTASKBAR="yes"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  INNERBORDER="no"
+  CONTEXTMENU="yes"
+  SELECTION="yes" />
+<!--
+  DFIR-Artifact-Finder — master triage launcher for the wrapper family
+  (Hayabusa / PECmd / AmcacheParser / MFTECmd / SrumECmd / SQLECmd wrappers, github.com/bpmorris22/*).
+
+  Scans a case folder (Velociraptor / KAPE collection trees) with `dir /s /b` (FSO recursion dies on the
+  long paths these trees produce), classifies every file against the artifact catalog, and presents a
+  host-grouped launch board. [Process] launches the matching wrapper via the family CLI contract:
+
+      mshta.exe "<Tool>-Wrapper.hta" "<artifactPath>" "<outDir>" [/auto]
+
+  Outputs land in  <scanRoot>\_Processed\<Host>_<Artifact>_<yyyyMMdd_HHmmss>\  and an append-only
+  manifest (artifact-finder-manifest.json) ties runs back to exact artifact paths, so already-processed
+  evidence shows as done on the next scan.
+
+  GOTCHAS:
+   * Velociraptor paths contain literal % (C%3A, %5C). Anything written into a .bat gets batEsc (%%);
+     WScript.Shell.Run launches (mshta / explorer) do NOT go through cmd, so % passes through unharmed.
+   * Only CLI-retrofitted wrappers (cli:true in the catalog) get real arguments. Others open bare with
+     the artifact path on the clipboard until their retrofit lands.
+   * This tool never opens artifact contents — it is a scanner + registry + launcher only.
+-->
+<style>
+  html{margin:0;height:100%;background:#0d1117}
+  body{margin:0;height:100%;background:#0d1117;color:#e6edf3;font-family:Segoe UI,Tahoma,sans-serif;font-size:16px}
+  #content{zoom:0.9}
+  a{color:#58a6ff}
+  .mono{font-family:Consolas,"Courier New",monospace}
+  .muted{color:#8b949e}
+  .err{color:#f85149}
+  .ok{color:#3fb950}
+  header{padding:8px 14px;background:#161b22;border-bottom:1px solid #30363d}
+  header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
+  header h1 small{color:#8b949e;font-weight:400}
+  .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .wrap{padding:12px 14px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  label.fld{display:block;margin:6px 0 2px;font-size:11px;color:#8b949e}
+  input.txt,select,textarea{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:13px;font-family:Consolas,monospace}
+  input.wide{width:62%}
+  .btn{background:#1c2330;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;margin:2px}
+  .btn:hover{border-color:#58a6ff}
+  .btn.primary{background:#1f6feb;border-color:#1f6feb}
+  .btn.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  .btn.sm{padding:2px 9px;font-size:11px;margin:0 2px}
+  .btn.amber{border-color:#8a5a2a;color:#f0883e}
+  .btn.amber:hover{border-color:#f0883e}
+  .btn[disabled]{color:#484f58;border-color:#21262d;cursor:default}
+  .row{white-space:nowrap}
+  .stat{display:inline-block;background:#1c2330;border:1px solid #30363d;border-radius:8px;padding:6px 12px;margin:0 6px 6px 0;min-width:70px;vertical-align:top;cursor:default}
+  .stat .n{font-size:17px;font-weight:700;display:block}
+  .stat .l{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  .stat.proc{border-color:#2a5a3a}.stat.proc .n{color:#3fb950}
+  .stat.launch{border-color:#8a7a2a}.stat.launch .n{color:#e3b341}
+  .stat.none{border-color:#2a5a8a}.stat.none .n{color:#58a6ff}
+  .stat.notool .n{color:#8b949e}
+  .stat.click{cursor:pointer}
+  .stat.click:hover{border-color:#58a6ff}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:4px 7px;border-bottom:1px solid #30363d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  th{background:#1c2330;cursor:pointer;color:#c9d1d9;position:relative;z-index:3;box-shadow:0 1px 0 #30363d}
+  th:hover{color:#58a6ff}
+  td{max-width:420px}
+  tr.sel td{background:#1c2f4a}
+  tr.grp td{background:#12233a;font-weight:600;color:#e6edf3;cursor:pointer;border-top:2px solid #30363d}
+  tr.dim td{color:#6e7681}
+  .scroll{max-height:56vh;overflow:auto;border:1px solid #30363d;border-radius:8px}
+  .chip{display:inline-block;font-size:10px;padding:1px 7px;border-radius:10px;font-weight:700;letter-spacing:.3px}
+  .t-a{background:#10263f;color:#58a6ff}
+  .t-b{background:#3a2a10;color:#f0883e}
+  .t-c{background:#21262d;color:#8b949e}
+  .st{display:inline-block;font-size:10px;padding:1px 8px;border-radius:10px;font-weight:700}
+  .st-none{background:#10263f;color:#58a6ff}
+  .st-launch{background:#3a3410;color:#e3b341}
+  .st-proc{background:#12351f;color:#3fb950}
+  .st-legacy{background:#3a2a10;color:#d29922;border:1px dashed #d29922}
+  .st-notool{background:#21262d;color:#6e7681;border:1px dashed #484f58}
+  .tk{display:inline-block;font-size:10px;border:1px solid #30363d;border-radius:10px;padding:1px 8px;margin:0 4px 4px 0}
+  .tk.have{border-color:#2a5a3a;color:#3fb950}
+  .tk.miss{border-color:#8b3a3a;color:#ff6b6b}
+  .tk .lnk{margin-left:5px}
+  .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:220px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:normal;word-break:break-word}
+  .dl div{margin:1px 0}
+  .kv{color:#8b949e}
+  #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
+  .hide{display:none}
+  .lnk{cursor:pointer;color:#58a6ff}
+  .lnk:hover{text-decoration:underline}
+  .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>DFIR Artifact Finder <small>&mdash; scan a case folder, launch the right tool <span id="appver"></span></small></h1>
+  <span class="pill" id="srcpill">no scan yet</span>
+  <span style="float:right">
+    <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
+    <button class="btn" id="fup" title="Larger text">A+</button>
+  </span>
+</header>
+
+<div class="wrap" id="content">
+
+  <!-- CONTROL PANEL -->
+  <div class="card">
+    <h3>Scan control</h3>
+    <label class="fld">Case folder to scan (recursive) &mdash; Velociraptor / KAPE collection trees, or any evidence folder</label>
+    <input class="txt wide" id="rootPath" value="">
+    <button class="btn" id="browseBtn">Browse&hellip;</button>
+    <button class="btn primary" id="scanBtn">Scan &rarr; find artifacts</button>
+    <span class="muted" id="status" style="margin-left:8px"></span>
+    <div style="margin-top:8px">
+      <label style="font-size:12px" title="When ON, [Process] passes /auto so the wrapper starts processing immediately on open. When OFF (default) the wrapper opens with everything pre-filled and you review + start it yourself.">
+        <input type="checkbox" id="optAuto"> bulk mode &mdash; launch with /auto (process immediately)</label>
+      &nbsp;&nbsp;<label style="font-size:12px" title="Show artifact types that have no wrapper tool yet (greyed rows — they double as the roadmap).">
+        <input type="checkbox" id="optShowC" checked> show artifacts with no tool yet</label>
+      <span class="sep"></span>
+      <button class="btn" id="logToggle">Show log</button>
+    </div>
+    <div style="margin-top:8px">
+      <span class="muted" style="font-size:11px">Toolkit (wrapper HTAs next to this app):</span>
+      <span id="toolStrip"></span>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div id="results" class="hide">
+    <div class="card">
+      <h3>Overview</h3>
+      <div id="statbar"></div>
+    </div>
+
+    <div class="card">
+      <h3>Artifacts <span class="muted" style="text-transform:none;letter-spacing:0">&mdash; grouped by host; click a row for detail</span></h3>
+      <div class="row" style="margin-bottom:8px" id="typeCats"></div>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn on" data-st="all">All</button>
+        <button class="btn" data-st="none">Not processed</button>
+        <button class="btn" data-st="launch">Launched</button>
+        <button class="btn" data-st="proc">Processed</button>
+        <button class="btn" data-st="legacy">Legacy?</button>
+        <button class="btn" data-st="notool">No tool</button>
+        <span class="sep"></span>
+        <select id="hostSel"><option value="">all hosts</option></select>
+        <input class="txt" id="q" placeholder="search path / artifact / host&hellip;" style="width:260px">
+        <button class="btn" id="clearBtn">clear</button>
+        <span class="sep"></span>
+        <button class="btn" id="exportBtn">Export view &rarr; CSV</button>
+        <button class="btn" id="copyBtn">Copy for case notes</button>
+        <span class="muted" id="count" style="margin-left:8px"></span>
+      </div>
+      <div class="scroll" id="tblScroll"><table id="tbl"></table></div>
+      <div class="muted" style="font-size:11px;margin-top:6px">
+        <span class="st st-none">&#9679; not processed</span> <span class="st st-launch">&#9684; launched</span>
+        <span class="st st-proc">&#10004; processed</span> <span class="st st-legacy">&#10004;? legacy output found</span>
+        <span class="st st-notool">&mdash; no tool yet</span>
+        &nbsp;&middot;&nbsp; [Process] opens the wrapper pre-filled for review; outputs go to _Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;datetime&gt;\ inside the case folder.
+      </div>
+    </div>
+
+    <div class="card hide" id="detailCard">
+      <h3>Detail <span class="lnk" id="detClose" style="float:right">close &times;</span></h3>
+      <div id="detBody"></div>
+    </div>
+  </div>
+
+</div>
+
+<script language="JScript">
+"use strict";
+
+var APP_VERSION = "0.1.1";
+var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
+
+/* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
+var BOOTLOG="";
+function bootLog(msg){
+  try{
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    if(!BOOTLOG){ var dir="";
+      // afHta isn't reachable at script top-level — location.pathname is
+      try{ var lp=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); dir=lp.substring(0,lp.lastIndexOf("\\")); }catch(e0){}
+      if(!dir){ var cl=""; try{ cl=afHta.commandLine+""; }catch(e1){}
+        var m=cl.match(/"([^"]+\.hta)"/i); dir=m?m[1].substring(0,m[1].lastIndexOf("\\")):fso.GetSpecialFolder(2)+""; }
+      BOOTLOG=dir+"\\DFIR-Artifact-Finder.boot.log";
+      var f0=fso.CreateTextFile(BOOTLOG,true); f0.WriteLine(new Date()+" boot"); f0.Close(); }
+    var f=fso.OpenTextFile(BOOTLOG,8,true); f.WriteLine(new Date()+" "+msg); f.Close();
+  }catch(e){}
+}
+window.onerror=function(msg,url,line){ bootLog("ONERROR line "+line+": "+msg); return false; };
+bootLog("script top-level reached");
+var SCANROOT = "";
+var TOOLDIR = "";
+var ROWS = [];                        // artifact rows (built by scan)
+var MANIFEST = [];                    // artifact-finder-manifest.json entries
+var PROCCSV = [];                     // csv paths found under _Processed (lowercase)
+var LEGACY = {};                      // "host|key" -> legacy csv path
+var HOPEN = {};                       // host group collapse state
+var DEFOPEN = 1;                      // default open state for new host groups (0 on multi-host scans)
+var CURTYPE = "all";
+var CURSTATUS = "all";
+var CURHOST = "";
+var QUERY = "";
+var SHOWC = true;
+var BUSY = false;
+var DETROW = null;
+var qTimer = null;
+var SETTINGS = {};
+
+/* ================= artifact catalog =================
+   tier A = cli:true (real CLI launch)   tier B = wrapper exists, no CLI yet (open + clipboard)
+   tier C = wrapper:"" (no tool yet — greyed, roadmap)
+   gran: "folder" (group matches by parent dir) | "file" (one row per file) | "host" (one aggregate row per host+collection)
+*/
+var CATALOG = [
+  {key:"evtx",    name:"Event logs",    outKey:"EventLogs", gran:"folder", wrapper:"Hayabusa-Wrapper",      repo:"Hayabusa-Wrapper",      cli:true,
+   desc:"Windows event logs — Sigma detection timeline via Hayabusa"},
+  {key:"pf",      name:"Prefetch",      outKey:"Prefetch",  gran:"folder", wrapper:"PECmd-Wrapper",         repo:"PECmd-Wrapper",         cli:true,
+   desc:"Execution evidence (.pf) — parsed with PECmd"},
+  {key:"amcache", name:"Amcache",       outKey:"Amcache",   gran:"file",   wrapper:"AmcacheParser-Wrapper", repo:"AmcacheParser-Wrapper", cli:true,
+   desc:"Program-inventory hive — first-seen + SHA1 via AmcacheParser"},
+  {key:"srum",    name:"SRUM",          outKey:"SRUM",      gran:"file",   wrapper:"SrumECmd-Wrapper",      repo:"SrumECmd-Wrapper",      cli:true,
+   desc:"System Resource Usage (network / exec history) via SrumECmd"},
+  {key:"mft",     name:"$MFT",          outKey:"MFT",       gran:"file",   wrapper:"MFTECmd-Wrapper",       repo:"MFTECmd-Wrapper",       cli:true,
+   desc:"NTFS master file table — file-system timeline via MFTECmd"},
+  {key:"sqlite",  name:"SQLite (curated)",outKey:"SQLite",  gran:"host",   wrapper:"SQLECmd-Wrapper",       repo:"SQLECmd-Wrapper",       cli:true,
+   desc:"History / Web Data / Cookies / Login Data / places / ActivitiesCache — per-DB paths in detail; open in SQLECmd"},
+  {key:"sqlx",    name:"Other SQLite",  outKey:"SQLiteMisc",gran:"host",   wrapper:"SQLECmd-Wrapper",       repo:"SQLECmd-Wrapper",       cli:true,
+   desc:"Uncurated .sqlite files — open individually in SQLECmd-Wrapper if of interest"},
+  {key:"lnk",     name:"LNK files",     outKey:"LNK",       gran:"host",   wrapper:"", repo:"", cli:false,
+   desc:"Shortcut files — LECmd wrapper planned"},
+  {key:"jump",    name:"Jump lists",    outKey:"JumpLists", gran:"host",   wrapper:"", repo:"", cli:false,
+   desc:"Automatic/Custom destinations — JLECmd wrapper planned"},
+  {key:"rbin",    name:"Recycle Bin",   outKey:"RecycleBin",gran:"host",   wrapper:"", repo:"", cli:false,
+   desc:"$Recycle.Bin contents ($I/$R) — wrapper planned"},
+  {key:"usnj",    name:"$UsnJrnl $J",   outKey:"UsnJrnl",   gran:"file",   wrapper:"", repo:"", cli:false,
+   desc:"USN journal — MFTECmd-Wrapper support planned"},
+  {key:"reg",     name:"Registry hives",outKey:"Registry",  gran:"host",   wrapper:"", repo:"", cli:false,
+   desc:"SYSTEM / SOFTWARE / SAM / SECURITY / NTUSER / UsrClass — RECmd wrapper planned"},
+  {key:"sum",     name:"SUM database",  outKey:"SUM",       gran:"file",   wrapper:"", repo:"", cli:false,
+   desc:"User Access Logging (Current.mdb) — wrapper planned"},
+  {key:"webc",    name:"WebCache",      outKey:"WebCache",  gran:"file",   wrapper:"", repo:"", cli:false,
+   desc:"IE/Edge legacy WebCache ESE DB — wrapper planned"}
+];
+var CATBYKEY = {};
+(function(){ for(var i=0;i<CATALOG.length;i++) CATBYKEY[CATALOG[i].key]=CATALOG[i]; })();
+
+var SQLITE_CURATED = {"history":1,"web data":1,"cookies":1,"login data":1,"places.sqlite":1,"activitiescache.db":1,"downloads.sqlite":1};
+var REG_ROOT = {"system":1,"software":1,"sam":1,"security":1,"default":1};
+/* legacy (pre-finder) output filename hints, per catalog key */
+var LEGACY_PAT = {evtx:/hayabusa/i, pf:/pecmd/i, amcache:/amcache/i, srum:/srum/i, mft:/mftecmd|_mft_/i, sqlite:/sqlecmd/i};
+
+/* ---------- tiny helpers ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ if(s==null) return ""; s=String(s);
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+function nf(n){ n=String(n); var dot=n.indexOf("."); var dec=""; if(dot>=0){ dec=n.substring(dot); n=n.substring(0,dot); }
+  var r="",c=0; for(var k=n.length-1;k>=0;k--){ r=n.charAt(k)+r; c++; if(c%3===0&&k>0) r=","+r; } return r+dec; }
+function setStatus(msg,cls){ var el=$("status"); el.innerHTML=esc(msg); el.className=cls||"muted"; }
+function appendLog(t){ var el=$("log"); el.style.display="block"; $("logToggle").innerHTML="Hide log";
+  el.innerHTML+=esc(t)+"\n"; el.scrollTop=el.scrollHeight; }
+function trimStr(s){ return String(s).replace(/^\s+|\s+$/g,""); }
+function baseName(p){ if(!p) return ""; p=String(p); var i=Math.max(p.lastIndexOf("\\"),p.lastIndexOf("/")); return i>=0?p.substring(i+1):p; }
+function parentDir(p){ var i=String(p).lastIndexOf("\\"); return i>=0?p.substring(0,i):p; }
+function showEl(id,vis){ var e=$(id); if(!e) return; var c=e.className.replace(/\s*\bhide\b/g,"");
+  e.className = vis ? c : (c+" hide"); }
+function trunc(s,n){ s=String(s); return s.length>n?(s.substring(0,n)+"…"):s; }
+function midTrunc(s,n){ s=String(s); if(s.length<=n) return s;
+  var half=Math.floor((n-1)/2); return s.substring(0,half)+"…"+s.substring(s.length-half); }
+function fmtSize(n){ if(n==null||n<0) return "—"; if(!n) return "0 B"; var u=["B","KB","MB","GB","TB"], i=0;
+  while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+" "+u[i]; }
+function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+function batEsc(s){ return String(s).replace(/%/g,"%%"); }
+function sanit(s){ return String(s).replace(/[^A-Za-z0-9\.\-]/g,"-"); }
+function slug(s){ var t=String(s).replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,""); return t||"db"; }
+function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
+  return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+function nowIso(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
+  return d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate())+"T"+p(d.getUTCHours())+":"+p(d.getUTCMinutes())+":"+p(d.getUTCSeconds())+"Z"; }
+function relPath(p){ if(SCANROOT && p.substring(0,SCANROOT.length).toLowerCase()===SCANROOT.toLowerCase()){
+  var r=p.substring(SCANROOT.length); return r.charAt(0)==="\\"?r.substring(1):r; } return p; }
+
+/* ---------- file IO (UTF-8 with network-zone ANSI fallback — same as siblings) ---------- */
+var FILE_IO="adodb";
+function zoneNote(){ appendLog("NOTE: network location — UTF-8 reader (ADODB.Stream) blocked by zone policy; using ANSI file IO. Fine for this tool (paths + JSON are ASCII)."); }
+function readUtf8(path){
+  if(FILE_IO==="adodb"){
+    try{
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.LoadFromFile(path);
+      var parts=[]; while(!st.EOS){ parts.push(st.ReadText(65536)); } st.Close();
+      return parts.join("");
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.OpenTextFile(path,1,false,0), out=f.ReadAll(); f.Close();
+  if(out.length>=3 && out.charCodeAt(0)===239 && out.charCodeAt(1)===187 && out.charCodeAt(2)===191) out=out.substring(3);
+  return out;
+}
+function writeUtf8(path,text){
+  if(FILE_IO==="adodb"){
+    try{
+      var st=new ActiveXObject("ADODB.Stream");
+      st.Type=2; st.Charset="utf-8"; st.Open(); st.WriteText(text); st.SaveToFile(path,2); st.Close();
+      return;
+    }catch(e){
+      if(!/safety settings|data source/i.test(e.message||"")) throw e;
+      FILE_IO="fso"; zoneNote();
+    }
+  }
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+
+/* ---------- process execution (async .bat + poll — same as siblings) ---------- */
+function runBat(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\af_"+stamp+".bat";
+  var logp=tmp+"\\af_"+stamp+".log";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.Close();
+  var rc=sh.Run('cmd /c ""'+bat+'""', show?1:0, true);
+  var txt="";
+  try{ if(fso.FileExists(logp)) txt=readUtf8(logp); }catch(e){ txt="(could not read log: "+e.message+")"; }
+  try{ fso.DeleteFile(bat); }catch(e2){}
+  try{ if(fso.FileExists(logp)) fso.DeleteFile(logp); }catch(e3){}
+  return { rc:rc, log:txt };
+}
+function runBatAsync(lines, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var sh=new ActiveXObject("WScript.Shell");
+  var tmp=fso.GetSpecialFolder(2)+"";
+  var stamp=uid();
+  var bat=tmp+"\\af_"+stamp+".bat";
+  var logp=tmp+"\\af_"+stamp+".log";
+  var donep=tmp+"\\af_"+stamp+".done";
+  var f=fso.CreateTextFile(bat,true);
+  f.WriteLine("@echo off");
+  for(var i=0;i<lines.length;i++){ f.WriteLine(lines[i].replace(/__LOG__/g,logp)); }
+  f.WriteLine('echo done> "'+donep+'"');
+  f.Close();
+  sh.Run('cmd /c ""'+bat+'""', show?1:0, false);
+  return { bat:bat, log:logp, done:donep, elapsed:0 };
+}
+function pollDone(ctx){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(fso.FileExists(ctx.done)){
+    var log=""; try{ if(fso.FileExists(ctx.log)) log=readUtf8(ctx.log); }catch(e){ log="(could not read log: "+e.message+")"; }
+    try{ fso.DeleteFile(ctx.bat); }catch(e1){}
+    try{ fso.DeleteFile(ctx.done); }catch(e2){}
+    try{ if(fso.FileExists(ctx.log)) fso.DeleteFile(ctx.log); }catch(e3){}
+    ctx.onDone(log);
+    return;
+  }
+  ctx.elapsed+=1;
+  if(ctx.elapsed>1800){ ctx.onTimeout&&ctx.onTimeout(); return; }   // 30-min cap (a dir listing should never take that)
+  if(ctx.onTick) ctx.onTick(ctx.elapsed);
+  window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+
+/* ---------- fs helpers ---------- */
+function fileExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FileExists(p); }catch(e){ return false; } }
+function folderExists(p){ try{ return new ActiveXObject("Scripting.FileSystemObject").FolderExists(p); }catch(e){ return false; } }
+function ensureFolder(p){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(fso.FolderExists(p)) return true;
+  var par=parentDir(p);
+  if(par && par!==p && !fso.FolderExists(par)) ensureFolder(par);
+  try{ fso.CreateFolder(p); return true; }catch(e){ return false; }
+}
+function htaFolder(){
+  try{ var cl=afHta.commandLine+""; var m=cl.match(/"([^"]+\.hta)"/i); if(!m) m=cl.match(/([A-Za-z]:\\[^"]+\.hta)/i);
+    if(m) return parentDir(m[1]); }catch(e){}
+  try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\"); return parentDir(p); }catch(e2){}
+  return "";
+}
+function isNetworkPath(p){
+  try{ if(/^\\\\/.test(p)) return true;
+    var fso=new ActiveXObject("Scripting.FileSystemObject");
+    return fso.GetDrive(fso.GetDriveName(p)).DriveType===3;
+  }catch(e){ return false; }
+}
+
+/* ---------- settings sidecar ---------- */
+function settingsPath(){ return TOOLDIR+"\\DFIR-Artifact-Finder.settings.json"; }
+function loadSettings(){
+  SETTINGS={};
+  try{ if(fileExists(settingsPath())) SETTINGS=JSON.parse(readUtf8(settingsPath()))||{}; }catch(e){ SETTINGS={}; }
+}
+function saveSettings(){
+  SETTINGS.lastRoot=$("rootPath").value;
+  SETTINGS.bulk=$("optAuto").checked;
+  SETTINGS.showC=$("optShowC").checked;
+  try{ writeUtf8(settingsPath(), JSON.stringify(SETTINGS,null,2)); }catch(e){}
+}
+
+/* ---------- manifest ---------- */
+function manifestPath(){ return SCANROOT+"\\_Processed\\artifact-finder-manifest.json"; }
+function loadManifest(){
+  MANIFEST=[];
+  try{ if(SCANROOT && fileExists(manifestPath())){ var m=JSON.parse(readUtf8(manifestPath())); if(m && m.length!=null) MANIFEST=m; } }
+  catch(e){ appendLog("Manifest unreadable ("+e.message+") — starting a fresh one on next launch."); }
+}
+function appendManifest(entry){
+  MANIFEST.push(entry);
+  try{
+    ensureFolder(SCANROOT+"\\_Processed");
+    writeUtf8(manifestPath(), JSON.stringify(MANIFEST,null,2));
+  }catch(e){ appendLog("Could not write manifest: "+e.message); }
+}
+
+/* ================= SCAN ================= */
+function startScan(){
+  var root=trimStr($("rootPath").value);
+  if(!root){ setStatus("Set a case folder to scan","err"); return; }
+  root=root.replace(/[\\\/]+$/,""); if(/^[A-Za-z]:$/.test(root)) root+="\\";
+  if(!folderExists(root)){ setStatus("Folder not found: "+root,"err"); return; }
+  if(BUSY){ setStatus("A scan is already running","err"); return; }
+  SCANROOT=root; $("rootPath").value=root;
+  setRootAttrib();
+  saveSettings();
+  BUSY=true; $("scanBtn").disabled=true;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var lst=fso.GetSpecialFolder(2)+"\\af_"+uid()+".lst";
+  appendLog("Scanning "+root+" (dir /s /b — long-path safe) …");
+  setStatus("Enumerating files…","muted");
+  // cmd /u → UTF-16 listing, so non-ASCII path characters survive (read back with FSO unicode mode)
+  var ctx=runBatAsync([
+    'cmd /u /c dir "'+batEsc(root)+'" /s /b /a:-d > "'+lst+'" 2>> "__LOG__"'
+  ], false);
+  ctx.onTick=function(s){ setStatus("Enumerating files… "+s+"s","muted"); };
+  ctx.onTimeout=function(){ BUSY=false; $("scanBtn").disabled=false; setStatus("Enumeration still running after 30 min — aborted watching. Is the path a huge network share?","err"); };
+  ctx.onDone=function(log){
+    if(trimStr(log)) appendLog("dir stderr:\n"+log);
+    try{ classify(lst); }
+    catch(e){ setStatus("Scan failed: "+e.message,"err"); appendLog("Scan failed: "+e.message); }
+    try{ fso.DeleteFile(lst); }catch(e2){}
+    BUSY=false; $("scanBtn").disabled=false;
+  };
+  window.setTimeout(function(){ pollDone(ctx); }, 500);
+}
+
+/* host / collection attribution for one absolute path.
+   ROOTAT covers scanning INSIDE a collection (e.g. root = ...\Collection-HOST-ts\uploads\auto):
+   the Collection-<host> segment then sits ABOVE the scan root, so derive it from the root's own path. */
+var ROOTAT=null;
+function setRootAttrib(){
+  ROOTAT=null;
+  var rsegs=SCANROOT.split("\\");
+  for(var i=rsegs.length-1;i>=0;i--){
+    var m=rsegs[i].match(/^Collection-(.+?)-\d{4}-\d{2}-\d{2}T/i);
+    if(m){ ROOTAT={host:m[1], coll:rsegs[i]}; break; }
+  }
+}
+function attrib(p){
+  var rel=relPath(p);
+  var segs=rel.split("\\");
+  var host="", coll="";
+  if(ROOTAT){ host=ROOTAT.host; coll=ROOTAT.coll; }
+  for(var i=0;i<segs.length-1;i++){
+    var m=segs[i].match(/^Collection-(.+?)-\d{4}-\d{2}-\d{2}T/i);
+    if(m){ host=m[1]; coll=segs[i]; break; }
+  }
+  if(!host){ host=(segs.length>1)?segs[0]:"(root)"; }
+  return {host:host, coll:coll};
+}
+
+function classify(lstPath){
+  setStatus("Classifying…","muted");
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  if(!fso.FileExists(lstPath)){ setStatus("Enumeration produced no listing — check the log","err"); return; }
+  var groups={}, total=0, skipped=0, badLines=0;
+  PROCCSV=[]; LEGACY={};
+  var csvLines=[];
+  var ts=fso.OpenTextFile(lstPath,1,false,-1);   // -1 = unicode (the listing is UTF-16 via cmd /u)
+  while(!ts.AtEndOfStream){
+    var p; try{ p=ts.ReadLine(); }catch(er){ badLines++; continue; }
+    if(!p) continue;
+    total++;
+    var low=p.toLowerCase();
+    // diversions & noise
+    if(low.indexOf("\\_processed\\")>=0){ if(/\.csv$/.test(low)) PROCCSV.push(low); continue; }
+    if(low.indexOf("\\results\\")>=0){ skipped++; continue; }
+    if(low.indexOf("\\exported csvs\\")>=0){ skipped++; continue; }
+    if(/\.(idx|log1|log2|regtrans-ms|blf)$/.test(low)){ skipped++; continue; }
+    if(/\.csv$/.test(low)) csvLines.push(p);
+    var base=baseName(low);
+    var key="", gran="";
+    // path-scoped first (so extension rules don't steal recycle-bin contents)
+    if(low.indexOf("\\$recycle.bin\\")>=0){ key="rbin"; }
+    else if(base==="amcache.hve"){ key="amcache"; }
+    else if(base==="srudb.dat"){ key="srum"; }
+    else if(base==="$mft"){ key="mft"; }
+    else if(base==="$j" || low.indexOf("$usnjrnl")>=0){ key="usnj"; }
+    else if(base==="webcachev01.dat"){ key="webc"; }
+    else if(base==="current.mdb" && low.indexOf("\\sum\\")>=0){ key="sum"; }
+    else if(SQLITE_CURATED[base]===1){ key="sqlite"; }
+    else if(REG_ROOT[base]===1 && low.indexOf("\\config\\")>=0){ key="reg"; }
+    else if(base==="ntuser.dat" || base==="usrclass.dat"){ key="reg"; }
+    else if(/\.evtx$/.test(base)){ key="evtx"; }
+    else if(/\.pf$/.test(base)){ key="pf"; }
+    else if(/\.lnk$/.test(base)){ key="lnk"; }
+    else if(/\.(automaticdestinations-ms|customdestinations-ms)$/.test(base)){ key="jump"; }
+    else if(/\.(sqlite|sqlite3)$/.test(base)){ key="sqlx"; }
+    if(!key) continue;
+    var cat=CATBYKEY[key]; gran=cat.gran;
+    var at=attrib(p);
+    var gpath, gkey;
+    if(gran==="folder"){ gpath=parentDir(p); gkey=key+"|"+gpath.toLowerCase(); }
+    else if(gran==="file"){ gpath=p; gkey=key+"|"+low; }
+    else { // host aggregate: anchor at the host's top folder under the scan root (or the root itself)
+      var segs0=relPath(p).split("\\");
+      gpath=(segs0.length>1)?(SCANROOT+"\\"+segs0[0]):SCANROOT;
+      gkey=key+"|"+at.host.toLowerCase()+"|"+at.coll.toLowerCase(); }
+    var g=groups[gkey];
+    if(!g){ g=groups[gkey]={key:key, cat:cat, path:gpath, host:at.host, coll:at.coll, files:0, bytes:0, entries:[]}; }
+    g.files++;
+    if(g.entries.length<5000) g.entries.push(p);
+  }
+  ts.Close();
+  // rows
+  ROWS=[];
+  for(var k in groups){ if(groups.hasOwnProperty(k)) ROWS.push(finishRow(groups[k])); }
+  // legacy csv hints (pre-finder outputs inside the case tree)
+  for(var c=0;c<csvLines.length;c++){
+    var cp=csvLines[c], cl=cp.toLowerCase(), cb=baseName(cl);
+    for(var lk in LEGACY_PAT){ if(LEGACY_PAT.hasOwnProperty(lk) && LEGACY_PAT[lk].test(cb)){
+      var ca=attrib(cp); LEGACY[ca.host.toLowerCase()+"|"+lk]=cp; } }
+  }
+  loadManifest();
+  for(var r=0;r<ROWS.length;r++) computeStatus(ROWS[r]);
+  sortRows();
+  // multi-host scans start with host groups collapsed (tidy first paint); single host opens expanded
+  HOPEN={}; DEFOPEN=(distinctHosts().length<=1)?1:0;
+  $("results").className="";
+  $("srcpill").innerHTML=nf(ROWS.length)+" artifacts &middot; "+esc(midTrunc(SCANROOT,60));
+  appendLog("Scan done: "+nf(total)+" files walked, "+nf(ROWS.length)+" artifact rows, "+nf(skipped)+" noise/sidecar files skipped"
+    +(badLines?(", "+nf(badLines)+" unreadable listing lines"):"")+".");
+  setStatus("Found "+nf(ROWS.length)+" artifacts across "+nf(distinctHosts().length)+" host(s) — "+nf(total)+" files scanned","ok");
+  CURTYPE="all"; CURSTATUS="all"; CURHOST=""; QUERY=""; $("q").value="";
+  populateHostFilter(); closeDetail();
+  render();
+}
+function finishRow(g){
+  // artifact label; sizes only for reasonably-sized rows (never stat 100k files)
+  var cat=g.cat;
+  g.label=cat.name;
+  g.outKey=cat.outKey;
+  g.bytes=-1;
+  if(g.files<=2000){
+    var fso=new ActiveXObject("Scripting.FileSystemObject"), sum=0, okAny=false;
+    for(var i=0;i<g.entries.length;i++){ try{ sum+=fso.GetFile(g.entries[i]).Size; okAny=true; }catch(e){} }
+    if(okAny) g.bytes=sum;
+  }
+  g.blob=(g.label+" "+g.host+" "+g.path+" "+cat.desc).toLowerCase();
+  g.status="none"; g.statusDate=""; g.lastOut="";
+  return g;
+}
+function distinctHosts(){
+  var seen={}, out=[];
+  for(var i=0;i<ROWS.length;i++){ var h=ROWS[i].host; if(!seen[h]){ seen[h]=1; out.push(h); } }
+  out.sort(); return out;
+}
+function sortRows(){
+  var order={}; for(var i=0;i<CATALOG.length;i++) order[CATALOG[i].key]=i;
+  ROWS.sort(function(a,b){
+    if(a.host!==b.host) return a.host<b.host?-1:1;
+    if(a.coll!==b.coll) return a.coll>b.coll?-1:1;             // newest collection first (timestamped names)
+    var oa=order[a.key], ob=order[b.key]; if(oa!==ob) return oa-ob;
+    return a.path<b.path?-1:(a.path>b.path?1:0);
+  });
+}
+
+/* ---------- processed-state ---------- */
+function stampOfOutDir(d){ var m=String(d).match(/_(\d{8}_\d{6})$/); if(!m) return "";
+  var s=m[1]; return s.substring(0,4)+"-"+s.substring(4,6)+"-"+s.substring(6,8)+" "+s.substring(9,11)+":"+s.substring(11,13); }
+function outDirHasCsv(outDir){
+  if(!outDir) return false;
+  var ol=String(outDir).toLowerCase();
+  for(var i=0;i<PROCCSV.length;i++){ if(PROCCSV[i].substring(0,ol.length)===ol) return true; }
+  if(folderExists(outDir)){ // outDir created after the listing (same session) — check live
+    try{ var fso=new ActiveXObject("Scripting.FileSystemObject");
+      var e=new Enumerator(fso.GetFolder(outDir).Files);
+      for(; !e.atEnd(); e.moveNext()){ if(/\.csv$/i.test(e.item().Name+"")) return true; } }catch(er){}
+  }
+  return false;
+}
+function computeStatus(row){
+  var cat=row.cat;
+  if(!cat.wrapper){ row.status="notool"; return; }
+  // 1. manifest entries for this exact artifact path (newest wins)
+  var best=null, pl=row.path.toLowerCase();
+  for(var i=0;i<MANIFEST.length;i++){ var m=MANIFEST[i];
+    if(m && m.artifactPath && String(m.artifactPath).toLowerCase()===pl){
+      if(!best || String(m.launchedUtc||"")>String(best.launchedUtc||"")) best=m; } }
+  if(best){
+    row.lastOut=best.outDir||"";
+    if(outDirHasCsv(best.outDir)){ row.status="proc"; row.statusDate=stampOfOutDir(best.outDir)||String(best.launchedUtc||"").substring(0,16).replace("T"," "); return; }
+    row.status="launch"; row.statusDate=String(best.launchedUtc||"").substring(0,16).replace("T"," ");
+    return;
+  }
+  // 2. run-folder fallback (manifest lost): _Processed\<host>_<outKey>_* containing a csv
+  var pref=("\\_processed\\"+sanit(row.host)+"_"+row.outKey+"_").toLowerCase();
+  for(var c=0;c<PROCCSV.length;c++){
+    var idx=PROCCSV[c].indexOf(pref);
+    if(idx>=0){ row.status="proc";
+      var seg=PROCCSV[c].substring(idx+12); // 12 = length of "\_processed\"
+      row.statusDate=stampOfOutDir(seg.split("\\")[0])||"";
+      return; }
+  }
+  // 3. legacy heuristic (advisory only)
+  if(LEGACY[row.host.toLowerCase()+"|"+row.key]){ row.status="legacy"; return; }
+  row.status="none";
+}
+
+/* ================= RENDER ================= */
+function passFilters(r){
+  if(!SHOWC && !r.cat.wrapper) return false;
+  if(CURTYPE!=="all" && r.key!==CURTYPE) return false;
+  if(CURSTATUS!=="all" && r.status!==CURSTATUS) return false;
+  if(CURHOST && r.host!==CURHOST) return false;
+  if(QUERY && r.blob.indexOf(QUERY)<0) return false;
+  return true;
+}
+function visibleRows(){ var out=[]; for(var i=0;i<ROWS.length;i++){ if(passFilters(ROWS[i])) out.push(ROWS[i]); } return out; }
+
+function stat(n,l,cls,st){ return '<span class="stat'+(cls?(" "+cls):"")+(st?' click" data-stf="'+st:'')+'"><span class="n">'+esc(n)+'</span><span class="l">'+esc(l)+'</span></span>'; }
+function renderOverview(rows){
+  var hosts={}, sc={none:0,launch:0,proc:0,legacy:0,notool:0};
+  for(var i=0;i<rows.length;i++){ hosts[rows[i].host]=1; sc[rows[i].status]++; }
+  var hn=0,k; for(k in hosts){ if(hosts.hasOwnProperty(k)) hn++; }
+  $("statbar").innerHTML=
+    stat(nf(hn),"hosts")+stat(nf(rows.length),"artifacts")+
+    stat(nf(sc.proc),"processed","proc","proc")+stat(nf(sc.legacy),"legacy?","launch","legacy")+
+    stat(nf(sc.launch),"launched","launch","launch")+stat(nf(sc.none),"not processed","none","none")+
+    stat(nf(sc.notool),"no tool yet","notool","notool");
+}
+function renderTypeChips(){
+  var counts={}, i;
+  for(i=0;i<ROWS.length;i++){ var r=ROWS[i];
+    if(!SHOWC && !r.cat.wrapper) continue;
+    if(CURSTATUS!=="all" && r.status!==CURSTATUS) continue;
+    if(CURHOST && r.host!==CURHOST) continue;
+    if(QUERY && r.blob.indexOf(QUERY)<0) continue;
+    counts[r.key]=(counts[r.key]||0)+1; counts.all=(counts.all||0)+1;
+  }
+  var h='<button class="btn'+(CURTYPE==="all"?" on":"")+'" data-tf="all">All ('+nf(counts.all||0)+')</button>';
+  for(i=0;i<CATALOG.length;i++){ var c=CATALOG[i]; if(!counts[c.key]) continue;
+    h+='<button class="btn'+(CURTYPE===c.key?" on":"")+'" data-tf="'+c.key+'">'+esc(c.name)+' ('+nf(counts[c.key])+')</button>';
+  }
+  $("typeCats").innerHTML=h;
+}
+function tierChip(cat){
+  if(cat.cli) return '<span class="chip t-a" title="CLI-ready — launches pre-filled">CLI</span>';
+  if(cat.wrapper) return '<span class="chip t-b" title="Wrapper exists but its command-line retrofit is pending — opens bare with the path on your clipboard">manual</span>';
+  return '<span class="chip t-c" title="No wrapper tool yet — on the roadmap">no tool</span>';
+}
+function statusPill(r){
+  if(r.status==="proc") return '<span class="st st-proc">&#10004; processed'+(r.statusDate?(" "+esc(r.statusDate)):"")+'</span>';
+  if(r.status==="legacy") return '<span class="st st-legacy" title="A CSV that looks like this tool\'s output exists in the case tree (pre-finder run). Advisory only.">&#10004;? legacy</span>';
+  if(r.status==="launch") return '<span class="st st-launch">&#9684; launched'+(r.statusDate?(" "+esc(r.statusDate)):"")+'</span>';
+  if(r.status==="notool") return '<span class="st st-notool">&mdash; no tool</span>';
+  return '<span class="st st-none">&#9679; not processed</span>';
+}
+var WPATH={};   // wrapper name -> resolved full HTA path ("" if not found); refreshed by renderToolStrip()
+function verCmp(a,b){ a=String(a).split("."); b=String(b).split("."); var n=Math.max(a.length,b.length);
+  for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0, y=parseInt(b[i],10)||0; if(x!==y) return x<y?-1:1; } return 0; }
+function htaVersion(path){
+  try{ var t=readUtf8(path); var m=t.match(/APP_VERSION\s*=\s*"([^"]+)"/); return m?m[1]:""; }catch(e){ return ""; }
+}
+/* Wrapper resolution: gather every candidate copy — next to this app, plus sibling dev folders under
+   the same parent (the wrappers live next door on the dev box: ..\Hayabusa-EventLogs\,
+   ..\PECmd-Prefetch\repo\, ..\SrumECmd-SRUM\publish\, …) — and pick the HIGHEST APP_VERSION, so a
+   stale copy at a folder root can't shadow the current one in repo\/publish\. Only when nothing is
+   found locally does Get tool download. */
+function resolveWrapper(cat){
+  if(!cat.wrapper) return "";
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var fn=cat.wrapper+".hta";
+  var cands=[TOOLDIR+"\\"+fn];
+  try{
+    var e=new Enumerator(fso.GetFolder(parentDir(TOOLDIR)).SubFolders);
+    for(; !e.atEnd(); e.moveNext()){ var sf=e.item().Path+"";
+      if(sf.toLowerCase()===TOOLDIR.toLowerCase()) continue;
+      cands.push(sf+"\\"+fn);                    // dev folder root
+      cands.push(sf+"\\publish\\"+fn);           // clean push repo convention
+      cands.push(sf+"\\repo\\"+fn);              // git working copy convention
+    }
+  }catch(er){}
+  var best="", bestVer="";
+  for(var i=0;i<cands.length;i++){
+    if(!fileExists(cands[i])) continue;
+    var v=htaVersion(cands[i]);
+    if(!best || verCmp(v,bestVer)>0){ best=cands[i]; bestVer=v; }
+  }
+  return best;
+}
+function actionButtons(r,i){
+  var cat=r.cat, h="";
+  if(cat.wrapper){
+    var have=!!WPATH[cat.wrapper];
+    if(!have) h+='<button class="btn sm amber" data-act="get" data-r="'+i+'" title="Download '+esc(cat.wrapper)+'.hta from GitHub into this folder">Get tool</button>';
+    else if(cat.cli) h+='<button class="btn sm'+(r.status==="proc"?"":" primary")+'" data-act="proc" data-r="'+i+'">'+(r.status==="proc"?"Re-process":"Process")+'</button>';
+    else h+='<button class="btn sm amber" data-act="proc" data-r="'+i+'" title="CLI retrofit pending — opens the tool and copies the artifact path to your clipboard">Open tool</button>';
+  }
+  h+='<button class="btn sm" data-act="open" data-r="'+i+'">Open folder</button>';
+  return h;
+}
+function render(){
+  if(!SCANROOT) return;
+  var rows=visibleRows();
+  renderOverview(rows);
+  renderTypeChips();
+  var html='<thead><tr><th style="width:150px">Artifact</th><th>Description</th><th>Path (relative)</th>'
+    +'<th style="width:60px;text-align:right">Files</th><th style="width:70px;text-align:right">Size</th>'
+    +'<th style="width:170px">Status</th><th style="width:190px">Actions</th></tr></thead><tbody>';
+  var curHost=null, shown=0;
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i];
+    var hk=r.host+(r.coll?("|"+r.coll):"");
+    if(hk!==curHost){
+      curHost=hk;
+      if(!(hk in HOPEN)) HOPEN[hk]=DEFOPEN;
+      var open=!!HOPEN[hk];
+      var cnt=0, done=0;
+      for(var j=0;j<rows.length;j++){ var rj=rows[j]; if((rj.host+(rj.coll?("|"+rj.coll):""))===hk){ cnt++; if(rj.status==="proc") done++; } }
+      html+='<tr class="grp" data-grp="'+esc(hk)+'"><td colspan="7">'+(open?"&#9660; ":"&#9654; ")
+        +esc(r.host)+(r.coll?(' <span class="muted" style="font-weight:normal">'+esc(r.coll)+'</span>'):'')
+        +' &nbsp;<span class="muted" style="font-weight:normal">'+nf(cnt)+' artifact'+(cnt===1?"":"s")+' &middot; '+nf(done)+' processed</span></td></tr>';
+    }
+    if(!HOPEN[hk]) continue;
+    shown++;
+    var dim=(!r.cat.wrapper)?' class="dim"':'';
+    html+='<tr data-r="'+i+'"'+dim+' style="cursor:pointer">'
+      +'<td>'+esc(r.label)+' '+tierChip(r.cat)+'</td>'
+      +'<td class="muted" title="'+esc(r.cat.desc)+'">'+esc(trunc(r.cat.desc,60))+'</td>'
+      +'<td class="mono" title="'+esc(r.path)+'">'+esc(midTrunc(relPath(r.path),70))+'</td>'
+      +'<td class="mono" style="text-align:right">'+nf(r.files)+'</td>'
+      +'<td class="mono" style="text-align:right">'+esc(fmtSize(r.bytes))+'</td>'
+      +'<td>'+statusPill(r)+'</td>'
+      +'<td>'+actionButtons(r,i)+'</td></tr>';
+  }
+  html+="</tbody>";
+  $("tbl").innerHTML=html;
+  $("count").innerHTML=nf(rows.length)+" artifact row"+(rows.length===1?"":"s");
+  applyFreeze();
+  highlightStatusChips();
+  window.__visRows=rows;
+}
+function applyFreeze(){
+  var sc=$("tblScroll"); if(!sc) return;
+  var ths=$("tbl").getElementsByTagName("th"); var y=sc.scrollTop;
+  for(var i=0;i<ths.length;i++){ ths[i].style.top=y+"px"; }
+}
+function highlightStatusChips(){
+  var bs=$("results").getElementsByTagName("button");
+  for(var j=0;j<bs.length;j++){ var st=bs[j].getAttribute("data-st");
+    if(st) bs[j].className=(st===CURSTATUS)?"btn on":"btn"; }
+}
+function populateHostFilter(){
+  var sel=$("hostSel"); sel.innerHTML="";
+  var hosts=distinctHosts();
+  var o0=document.createElement("option"); o0.value=""; o0.text="all hosts ("+hosts.length+")"; sel.add(o0);
+  for(var i=0;i<hosts.length;i++){ var o=document.createElement("option"); o.value=hosts[i]; o.text=hosts[i]; sel.add(o); }
+  CURHOST=""; sel.value="";
+}
+
+/* ---------- detail pane ---------- */
+function buildCmd(row){
+  var cat=row.cat;
+  if(!cat.wrapper) return "(no wrapper tool yet)";
+  var hta=WPATH[cat.wrapper]||(TOOLDIR+"\\"+cat.wrapper+".hta");
+  if(!cat.cli) return 'mshta.exe "'+hta+'"   (then paste: '+row.path+')';
+  var outDir=SCANROOT+"\\_Processed\\"+sanit(row.host)+"_"+row.outKey+"_<datetime>";
+  return 'mshta.exe "'+hta+'" "'+row.path+'" "'+outDir+'"'+($("optAuto").checked?" /auto":"");
+}
+function renderDetail(row){
+  DETROW=row;
+  var h='<div style="font-size:14px;margin-bottom:6px"><b>'+esc(row.label)+'</b> '+tierChip(row.cat)+' '+statusPill(row)+'</div>';
+  h+='<div class="mono muted" style="font-size:11px;margin-bottom:8px">host '+esc(row.host)
+    +(row.coll?(' &middot; '+esc(row.coll)):'')+' &middot; '+nf(row.files)+' file'+(row.files===1?"":"s")
+    +' &middot; '+esc(fmtSize(row.bytes))+'</div>';
+  h+='<h3>Path</h3><div class="dl"><div>'+esc(row.path)+'</div></div>';
+  h+='<div style="margin:4px 0"><span class="lnk" data-cp="'+esc(row.path)+'">copy path</span>'
+    +' &nbsp;&middot;&nbsp; <span class="lnk" data-cp="'+esc(buildCmd(row))+'">copy launch command</span></div>';
+  h+='<h3>Launch command</h3><div class="dl"><div>'+esc(buildCmd(row))+'</div></div>';
+  // manifest history
+  var hist=[], pl=row.path.toLowerCase();
+  for(var i=0;i<MANIFEST.length;i++){ var m=MANIFEST[i];
+    if(m && m.artifactPath && String(m.artifactPath).toLowerCase()===pl) hist.push(m); }
+  if(hist.length){
+    h+='<h3>Processing history ('+hist.length+')</h3><div class="dl">';
+    for(var j=hist.length-1;j>=0;j--){ var e=hist[j];
+      h+='<div><span class="kv">'+esc(e.launchedUtc||"?")+'</span> &middot; '+esc(e.wrapper||"?")
+        +(e.outDir?(' &rarr; '+esc(e.outDir)+(outDirHasCsv(e.outDir)?' <span class="ok">(has CSV)</span>':' <span class="muted">(no CSV)</span>')):' <span class="muted">(manual — no outDir)</span>')+'</div>'; }
+    h+='</div>';
+  }
+  if(row.status==="legacy"){
+    var lp=LEGACY[row.host.toLowerCase()+"|"+row.key];
+    h+='<h3>Legacy output (advisory)</h3><div class="dl"><div>'+esc(lp||"")+'</div></div>';
+  }
+  var n=row.entries.length>200?200:row.entries.length;
+  h+='<h3>Matched files (first '+n+' of '+nf(row.files)+')</h3><div class="dl">';
+  for(var f=0;f<n;f++){ h+='<div>'+esc(relPath(row.entries[f]))+'</div>'; }
+  h+='</div>';
+  $("detBody").innerHTML=h;
+  showEl("detailCard",true);
+}
+function closeDetail(){ DETROW=null; showEl("detailCard",false); $("detBody").innerHTML=""; }
+
+/* ================= ACTIONS ================= */
+function wrapperPath(cat){ return TOOLDIR+"\\"+cat.wrapper+".hta"; }   // download destination
+function doProcess(row){
+  var cat=row.cat;
+  if(!cat.wrapper){ setStatus("No wrapper tool for "+cat.name+" yet","err"); return; }
+  var hta=WPATH[cat.wrapper]||"";
+  if(!hta){ getTool(cat); return; }
+  if(row.status==="proc"){
+    if(!confirm("This artifact already has output"+(row.statusDate?(" from "+row.statusDate):"")+".\n\nRe-process it? (A new _Processed run folder is created; nothing is overwritten.)")) return;
+  }
+  var sh=new ActiveXObject("WScript.Shell");
+  if(!cat.cli){
+    // tier B — wrapper lacks the CLI retrofit: open bare + path on clipboard
+    try{ window.clipboardData.setData("Text", row.path); }catch(e){}
+    try{ sh.Run('mshta.exe "'+hta+'"',1,false); }
+    catch(e2){ setStatus("Could not launch "+cat.wrapper+": "+e2.message,"err"); return; }
+    appendManifest({artifactPath:row.path, key:row.key, host:row.host, wrapper:cat.wrapper, outDir:"", launchedUtc:nowIso(), cmd:"(manual — no CLI yet)"});
+    row.status="launch"; row.statusDate=nowIso().substring(0,16).replace("T"," ");
+    setStatus(cat.wrapper+" opened — artifact path is on your clipboard; paste it into the tool's input box.","ok");
+    appendLog("Launched (manual) "+cat.wrapper+" for "+row.path);
+    render(); if(DETROW===row) renderDetail(row);
+    return;
+  }
+  var outDir=SCANROOT+"\\_Processed\\"+sanit(row.host)+"_"+row.outKey+"_"+nowStamp();
+  if(!ensureFolder(outDir)){ setStatus("Could not create output folder: "+outDir,"err"); return; }
+  var cmd='mshta.exe "'+hta+'" "'+row.path+'" "'+outDir+'"'+($("optAuto").checked?" /auto":"");
+  try{ sh.Run(cmd,1,false); }
+  catch(e3){ setStatus("Could not launch "+cat.wrapper+": "+e3.message,"err"); return; }
+  appendManifest({artifactPath:row.path, key:row.key, host:row.host, wrapper:cat.wrapper, outDir:outDir, launchedUtc:nowIso(), cmd:cmd});
+  row.status="launch"; row.statusDate=nowIso().substring(0,16).replace("T"," "); row.lastOut=outDir;
+  setStatus(cat.wrapper+" launched for "+row.host+" "+row.label+" — review inside the tool, then start it. Rescan afterwards to see ✔.","ok");
+  appendLog("Launched: "+cmd);
+  render(); if(DETROW===row) renderDetail(row);
+}
+function openFolder(row){
+  var target=(row.cat.gran==="folder"||row.cat.gran==="host")?row.path:row.path;
+  var sh=new ActiveXObject("WScript.Shell");
+  try{
+    if(row.cat.gran==="file" && fileExists(row.path)) sh.Run('explorer.exe /select,"'+row.path+'"',1,false);
+    else if(folderExists(target)) sh.Run('explorer.exe "'+target+'"',1,false);
+    else sh.Run('explorer.exe "'+parentDir(target)+'"',1,false);
+  }catch(e){ setStatus("Could not open Explorer: "+e.message,"err"); }
+}
+function getTool(cat){
+  if(!cat.repo){ setStatus("No download source for "+cat.name,"err"); return; }
+  var dest=wrapperPath(cat);
+  var fn=cat.wrapper+".hta";
+  if(!confirm("Download "+fn+" from github.com/bpmorris22/"+cat.repo+"\ninto\n"+TOOLDIR+" ?")) return;
+  setStatus("Downloading "+cat.wrapper+"…","muted");
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var ps1=fso.GetSpecialFolder(2)+"\\af_get_"+uid()+".ps1";
+  var dq=String(dest).replace(/'/g,"''");
+  var L=[];
+  L.push("$ErrorActionPreference='Stop'");
+  L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
+  // repos are split across default branches (PECmd/AmcacheParser=master, the rest=main) — try both
+  L.push("$ok=$false");
+  L.push("foreach($u in @('"+GH_RAW+cat.repo+"/main/"+fn+"','"+GH_RAW+cat.repo+"/master/"+fn+"')){");
+  L.push("  try{ Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile '"+dq+"' -Headers @{ 'User-Agent'='DFIR-Artifact-Finder' }");
+  L.push("       Write-Output ('GET_OK '+$u); $ok=$true; break }");
+  L.push("  catch{ Write-Output ('miss: '+$u+' -> '+$_.Exception.Message) }");
+  L.push("}");
+  L.push("if(-not $ok){ throw 'download failed on both branches' }");
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Could not stage download script: "+ew.message,"err"); return; }
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], true);
+  try{ fso.DeleteFile(ps1); }catch(e0){}
+  appendLog("--- download "+cat.wrapper+" ---\n"+r.log);
+  if((r.log+"").indexOf("GET_OK")>=0 && fileExists(dest)){
+    setStatus(cat.wrapper+".hta installed — click Process again.","ok"); renderToolStrip(); render();
+  } else {
+    setStatus("Download failed (offline, or the repo isn't published yet). Place "+cat.wrapper+".hta next to this app manually.","err");
+  }
+}
+function renderToolStrip(){
+  var seen={}, h="";
+  for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i];
+    if(!c.wrapper || seen[c.wrapper]) continue; seen[c.wrapper]=1;
+    var p=resolveWrapper(c);
+    WPATH[c.wrapper]=p;
+    var local=p && parentDir(p).toLowerCase()===TOOLDIR.toLowerCase();
+    h+='<span class="tk '+(p?"have":"miss")+'" title="'+esc(p||"not found next to this app or in sibling dev folders")+'">'
+      +esc(c.wrapper)+(p?(" &#10004;"+(local?"":' <span class="muted">(dev folder)</span>')):" missing")
+      +(p?"":' <span class="lnk" data-get="'+esc(c.key)+'">get</span>')
+      +(c.cli?'':' <span class="muted" title="CLI retrofit pending — Process opens it bare with the path on your clipboard">(manual)</span>')+'</span>';
+  }
+  $("toolStrip").innerHTML=h;
+}
+
+/* ---------- export / copy ---------- */
+function cq(v){ v=(v==null)?"":String(v); return /[",\r\n]/.test(v)?('"'+v.replace(/"/g,'""')+'"'):v; }
+function exportView(){
+  var rows=window.__visRows||[];
+  if(!rows.length){ setStatus("Nothing to export","err"); return; }
+  var head=["Host","Collection","Artifact","Path","Files","SizeBytes","Status","StatusDate","Wrapper"];
+  var lines=[head.join(",")];
+  for(var i=0;i<rows.length;i++){ var r=rows[i];
+    lines.push([cq(r.host),cq(r.coll),cq(r.label),cq(r.path),cq(r.files),cq(r.bytes<0?"":r.bytes),
+      cq(r.status),cq(r.statusDate),cq(r.cat.wrapper||"")].join(",")); }
+  var dir=TOOLDIR+"\\Exported CSVs";
+  ensureFolder(dir);
+  var path=dir+"\\artifact_board_"+nowStamp()+".csv";
+  try{ writeUtf8(path, lines.join("\r\n")); setStatus("Exported "+nf(rows.length)+" rows → "+path,"ok"); appendLog("Exported: "+path); }
+  catch(e){ setStatus("Export failed: "+e.message,"err"); }
+}
+function copyNotes(){
+  var rows=window.__visRows||[];
+  if(!rows.length){ setStatus("Nothing to copy","err"); return; }
+  var out=[], statName={none:"NOT PROCESSED",launch:"LAUNCHED",proc:"PROCESSED",legacy:"PROCESSED(legacy?)",notool:"NO TOOL"};
+  out.push("Artifact board — "+SCANROOT+" — "+nowIso());
+  for(var i=0;i<rows.length;i++){ var r=rows[i];
+    out.push(r.host+" | "+r.label+" | "+nf(r.files)+" file(s) | "+statName[r.status]+(r.statusDate?(" "+r.statusDate):"")+" | "+relPath(r.path)); }
+  try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied "+rows.length+" lines to clipboard","ok"); }
+  catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+
+/* ---------- command line ----------
+   mshta.exe "DFIR-Artifact-Finder.hta" ["<scanRoot>"] [/scan]  */
+function tokenizeCmdTail(){
+  var cl=""; try{ cl=afHta.commandLine+""; }catch(e){ return []; }
+  var m=cl.match(/\.hta"?/i);
+  var tail = m ? cl.substring(m.index+m[0].length) : cl;
+  var toks=[], i=0, n=tail.length, cur="", inq=false;
+  while(i<n){ var c=tail.charAt(i);
+    if(inq){ if(c==='"'){ inq=false; } else cur+=c; i++; continue; }
+    if(c==='"'){ inq=true; i++; continue; }
+    if(c===' '||c==='\t'){ if(cur!==""){ toks.push(cur); cur=""; } i++; continue; }
+    cur+=c; i++;
+  }
+  if(cur!=="") toks.push(cur);
+  return toks;
+}
+function parseCli(){
+  var toks=tokenizeCmdTail();
+  var cli={root:"", scan:false};
+  for(var i=0;i<toks.length;i++){ var t=toks[i];
+    if(/^[\/\-]{1,2}scan$/i.test(t)){ cli.scan=true; continue; }
+    if(/^[\/\-]/.test(t)) continue;
+    if(!cli.root) cli.root=t;
+  }
+  return cli;
+}
+
+/* ---------- wiring ---------- */
+function init(){
+  bootLog("init start");
+  try{ window.resizeTo(1420,940); }catch(e){}
+  $("appver").innerHTML="&middot; v"+APP_VERSION;
+  try{ document.title="DFIR Artifact Finder v"+APP_VERSION; }catch(e){}
+  TOOLDIR=htaFolder();
+  $("tblScroll").onscroll=applyFreeze;
+  loadSettings();
+  if(SETTINGS.lastRoot) $("rootPath").value=SETTINGS.lastRoot;
+  if(SETTINGS.bulk) $("optAuto").checked=true;
+  if(SETTINGS.showC===false){ $("optShowC").checked=false; SHOWC=false; }
+  renderToolStrip();
+
+  // A± zooms #content only — zooming <body> made the header (and these buttons)
+  // slide off-screen (which is what happened when body-zoom widened the header past the window edge).
+  var zoom=0.9, zContent=$("content");
+  function applyZoom(){ zContent.style.zoom=zoom; var p=Math.round(zoom*100)+"%";
+    $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
+  $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
+  $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
+
+  $("scanBtn").onclick=startScan;
+  $("browseBtn").onclick=function(){
+    try{ var sha=new ActiveXObject("Shell.Application");
+      var fld=sha.BrowseForFolder(0,"Select the case folder to scan (collection trees are fine — the scan recurses).",0x51);
+      if(fld){ var p=""; try{ p=fld.Self.Path+""; }catch(e2){}
+        if(/^[a-z]:\\|^\\\\/i.test(p)) $("rootPath").value=p;
+        else if(p) setStatus("That selection has no filesystem path — pick a real folder.","err"); }
+    }catch(e){ setStatus("Folder picker unavailable: "+e.message,"err"); }
+  };
+  $("optAuto").onclick=function(){ saveSettings(); if(DETROW) renderDetail(DETROW); };
+  $("optShowC").onclick=function(){ SHOWC=this.checked; saveSettings(); if(ROWS.length) render(); };
+  $("logToggle").onclick=function(){ var l=$("log");
+    if(l.style.display==="none"||!l.style.display){ l.style.display="block"; this.innerHTML="Hide log"; }
+    else { l.style.display="none"; this.innerHTML="Show log"; } };
+  $("q").onkeyup=function(){ if(qTimer) window.clearTimeout(qTimer);
+    qTimer=window.setTimeout(function(){ QUERY=trimStr($("q").value).toLowerCase(); render(); },150); };
+  $("hostSel").onchange=function(){ CURHOST=this.value; render(); };
+  $("clearBtn").onclick=function(){ $("q").value=""; QUERY=""; CURTYPE="all"; CURSTATUS="all"; CURHOST=""; $("hostSel").value=""; render(); };
+  $("exportBtn").onclick=exportView;
+  $("copyBtn").onclick=copyNotes;
+  $("detClose").onclick=closeDetail;
+
+  /* click delegation: actions, chips, group headers, rows, copy links, tool-strip get */
+  document.onclick=function(e){ e=e||window.event; var t=e.target||e.srcElement;
+    if(!t||!t.getAttribute) return;
+    var cp=t.getAttribute("data-cp");
+    if(cp){ try{ window.clipboardData.setData("Text",cp); setStatus("Copied to clipboard","ok"); }catch(ec){ setStatus("Copy failed","err"); } return; }
+    var gk=t.getAttribute("data-get");
+    if(gk){ getTool(CATBYKEY[gk]); return; }
+    var tf=t.getAttribute("data-tf");
+    if(tf){ CURTYPE=tf; render(); return; }
+    var stf=t.getAttribute("data-stf");
+    if(stf){ CURSTATUS=(CURSTATUS===stf)?"all":stf; render(); return; }
+    var st=t.getAttribute("data-st");
+    if(st){ CURSTATUS=st; render(); return; }
+    var act=t.getAttribute("data-act");
+    if(act){ var ri=parseInt(t.getAttribute("data-r"),10); var vrows=window.__visRows||[];
+      if(ri>=0&&ri<vrows.length){
+        if(act==="proc") doProcess(vrows[ri]);
+        else if(act==="open") openFolder(vrows[ri]);
+        else if(act==="get") getTool(vrows[ri].cat);
+      } return; }
+    var n=t;
+    while(n && n.tagName!=="TR"){ n=n.parentNode; if(n&&n.tagName==="TABLE"){ n=null; break; } }
+    if(!n||!n.getAttribute) return;
+    var grp=n.getAttribute("data-grp");
+    if(grp!=null && grp!==""){ HOPEN[grp]=HOPEN[grp]?0:1; render(); return; }
+    var di=n.getAttribute("data-r");
+    if(di!=null && di!==""){ var ix=parseInt(di,10); var rows2=window.__visRows||[];
+      if(ix>=0&&ix<rows2.length){ renderDetail(rows2[ix]);
+        var trs=$("tbl").getElementsByTagName("tr");
+        for(var z=0;z<trs.length;z++){ var zi=trs[z].getAttribute("data-r");
+          if(zi!=null&&zi!==""){ trs[z].className=(parseInt(zi,10)===ix)?"sel":((window.__visRows[parseInt(zi,10)]&&!window.__visRows[parseInt(zi,10)].cat.wrapper)?"dim":""); } } }
+    }
+  };
+
+  bootLog("init wired");
+  // command line: positional scan root + /scan
+  var cli=parseCli();
+  if(cli.root && folderExists(cli.root)){ $("rootPath").value=cli.root; }
+  else if(cli.root){ setStatus("CLI scan root not found: "+cli.root,"err"); }
+  if(cli.scan && folderExists($("rootPath").value)){
+    appendLog("CLI: /scan — scanning "+$("rootPath").value);
+    window.setTimeout(startScan, 200);
+  }
+  if(isNetworkPath(TOOLDIR))
+    appendLog("Heads-up: running from a network location ("+TOOLDIR+"). Zone policy may block the UTF-8 reader; the app falls back to ANSI IO automatically.");
+}
+
+window.onload=init;
+</script>
+</body>
+</html>

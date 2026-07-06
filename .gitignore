@@ -1,0 +1,7 @@
+# never commit runtime state, logs, the internal spec, or any case data
+*.settings.json
+*.boot.log
+*.log
+SPEC.md
+_Processed/
+*.csv
