@@ -196,7 +196,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.1";
+var APP_VERSION = "0.3.2";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -239,6 +239,7 @@ var DRAG = null;                      // active column-drag state
 /* ================= artifact catalog =================
    tier A = cli:true (real CLI launch)   tier B = wrapper exists, no CLI yet (open + clipboard)
    tier C = wrapper:"" (no tool yet — greyed, roadmap)
+   hidden:true = parked — detected but never displayed (not even via the roadmap checkbox); delete the flag to re-enable
    gran: "folder" (group matches by parent dir) | "file" (one row per file) | "host" (one aggregate row per host+collection)
 */
 var CATALOG = [
@@ -268,8 +269,8 @@ var CATALOG = [
    desc:"SYSTEM / SOFTWARE / SAM / SECURITY / NTUSER / UsrClass — RECmd wrapper planned"},
   {key:"sum",     name:"SUM database",  outKey:"SUM",       gran:"file",   wrapper:"", repo:"", cli:false,
    desc:"User Access Logging (Current.mdb) — wrapper planned"},
-  {key:"webc",    name:"WebCache",      outKey:"WebCache",  gran:"file",   wrapper:"", repo:"", cli:false,
-   desc:"IE/Edge legacy WebCache ESE DB — wrapper planned"}
+  {key:"webc",    name:"WebCache",      outKey:"WebCache",  gran:"file",   wrapper:"", repo:"", cli:false, hidden:true,
+   desc:"IE/Edge legacy WebCache ESE DB — wrapper planned"}   // parked per operator 2026-07-06 (spec drafted, inclusion TBD)
 ];
 var CATBYKEY = {};
 (function(){ for(var i=0;i<CATALOG.length;i++) CATBYKEY[CATALOG[i].key]=CATALOG[i]; })();
@@ -540,7 +541,9 @@ function classify(lstPath){
     else if(/\.(automaticdestinations-ms|customdestinations-ms)$/.test(base)){ key="jump"; }
     else if(/\.(sqlite|sqlite3)$/.test(base)){ key="sqlx"; }
     if(!key) continue;
-    var cat=CATBYKEY[key]; gran=cat.gran;
+    var cat=CATBYKEY[key];
+    if(cat.hidden){ skipped++; continue; }   // parked artifact types — never become rows
+    gran=cat.gran;
     var at=attrib(p);
     var gpath, gkey;
     if(gran==="folder"){ gpath=parentDir(p); gkey=key+"|"+gpath.toLowerCase(); }
