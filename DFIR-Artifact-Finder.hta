@@ -27,9 +27,13 @@
 
       mshta.exe "<Tool>-Wrapper.hta" "<artifactPath>" "<outDir>" [/auto]
 
-  Outputs land in  <scanRoot>\_Processed\<Host>_<Artifact>_<yyyyMMdd_HHmmss>\  and an append-only
-  manifest (artifact-finder-manifest.json) ties runs back to exact artifact paths, so already-processed
-  evidence shows as done on the next scan. [Open] on a processed/legacy row hands the newest output
+  Outputs land in  <toolkitDir>\_Processed\<Hostname>\<AppName>\  (toolkitDir = the folder this .hta
+  lives in; Hostname = the mandatory Target-hostname field, guessed from the scan and overwritable;
+  AppName = wrapper name minus "-Wrapper"). An append-only manifest
+  (_Processed\artifact-finder-manifest.json) ties runs back to exact artifact paths, so already-processed
+  evidence shows as done on the next scan. Old-convention runs
+  (<scanRoot>\_Processed\<Host>_<Artifact>_<stamp>\ + scan-root manifest) are still read for state and
+  [Open], never written. [Open] on a processed/legacy row hands the newest output
   (csv, or the .html report for MFT) back to its wrapper via the same CLI contract — auto-downloading
   the wrapper first if it's missing.
 
@@ -107,6 +111,15 @@
   .kv{color:#8b949e}
   #log{white-space:pre-wrap;font-family:Consolas,monospace;font-size:11px;color:#8b949e;max-height:140px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;display:none;margin-top:8px}
   .hide{display:none}
+  .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.66);z-index:1000;overflow:auto}
+  .modal .mcard{max-width:780px;margin:36px auto;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px 22px}
+  .modal h2{margin:0 0 6px;font-size:18px;font-weight:600}
+  .modal h3{margin:12px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
+  .modal ul{margin:4px 0;padding-left:20px}.modal li{margin:3px 0;font-size:13px}
+  .modal p{font-size:13px;margin:6px 0}
+  .modal code{background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:2px 6px;font-family:Consolas,monospace;font-size:12px}
+  .modal .x{float:right;cursor:pointer;color:#8b949e;font-size:22px;line-height:1}.modal .x:hover{color:#e6edf3}
+  .modal .gh{font-family:Consolas,monospace;font-size:12px}
   .lnk{cursor:pointer;color:#58a6ff}
   .lnk:hover{text-decoration:underline}
   .sep{display:inline-block;width:1px;height:18px;background:#30363d;margin:0 6px;vertical-align:middle}
@@ -118,6 +131,7 @@
   <span class="pill" id="srcpill">no scan yet</span>
   <span style="float:right">
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
+    <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
     <button class="btn" id="fdown" title="Smaller text">A&minus;</button>
     <button class="btn" id="fup" title="Larger text">A+</button>
   </span>
@@ -133,6 +147,11 @@
     <button class="btn" id="browseBtn">Browse&hellip;</button>
     <button class="btn primary" id="scanBtn">Scan &rarr; find artifacts</button>
     <span class="muted" id="status" style="margin-left:8px"></span>
+    <div style="margin-top:8px">
+      <label class="fld" style="display:inline" title="Names the output folder: _Processed\&lt;host&gt;\&lt;App&gt; next to this app. Guessed from the scan — overwrite it if the guess is wrong. On multi-host scans each row uses its own detected host; this field covers rows whose host could not be derived.">Target hostname (required for processing)</label>
+      <input class="txt" id="hostName" value="" style="width:220px" placeholder="guessed after scan">
+      <span class="muted" style="font-size:11px">&rarr; outputs go to _Processed\&lt;host&gt;\&lt;App&gt; next to this app</span>
+    </div>
     <div style="margin-top:8px">
       <label style="font-size:12px" title="When ON, [Process] passes /auto so the wrapper starts processing immediately on open. When OFF (default) the wrapper opens with everything pre-filled and you review + start it yourself.">
         <input type="checkbox" id="optAuto"> bulk mode &mdash; launch with /auto (process immediately)</label>
@@ -179,7 +198,7 @@
         <span class="st st-none">&#9679; not processed</span> <span class="st st-launch">&#9684; launched</span>
         <span class="st st-proc">&#10004; processed</span> <span class="st st-legacy">&#10004;? legacy output found</span>
         <span class="st st-notool">&mdash; no tool yet</span>
-        &nbsp;&middot;&nbsp; [Process] opens the wrapper pre-filled for review; outputs go to _Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;datetime&gt;\ inside the case folder.
+        &nbsp;&middot;&nbsp; [Process] opens the wrapper pre-filled for review; outputs go to _Processed\&lt;Hostname&gt;\&lt;App&gt;\ next to this app (Target hostname field above).
         [Open] on a processed row loads the newest output straight back into the wrapper's viewer (downloading the wrapper first if it's missing).
         Drag a column header's right edge to resize it; double-click the edge to reset all widths.
       </div>
@@ -196,7 +215,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.3.2";
+var APP_VERSION = "0.4.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -219,8 +238,10 @@ bootLog("script top-level reached");
 var SCANROOT = "";
 var TOOLDIR = "";
 var ROWS = [];                        // artifact rows (built by scan)
-var MANIFEST = [];                    // artifact-finder-manifest.json entries
-var PROCCSV = [];                     // csv paths found under _Processed (lowercase)
+var MANIFEST = [];                    // artifact-finder-manifest.json entries (new toolkit manifest + legacy scan-root one)
+var PROCCSV = [];                     // csv paths found under the SCAN ROOT's _Processed (old convention, lowercase)
+var TKFILES = [];                     // {p:lowercase path, mtime:"yyyy-mm-dd hh:mm"} under TOOLDIR\_Processed (new convention)
+var HOST_TOUCHED = false;             // operator typed in the Target-hostname field — never clobber it with guesses
 var LEGACY = {};                      // "host|key" -> legacy csv path
 var HOPEN = {};                       // host group collapse state
 var DEFOPEN = 1;                      // default open state for new host groups (0 on multi-host scans)
@@ -433,18 +454,87 @@ function saveSettings(){
 }
 
 /* ---------- manifest ---------- */
-function manifestPath(){ return SCANROOT+"\\_Processed\\artifact-finder-manifest.json"; }
+function manifestPath(){ return TOOLDIR+"\\_Processed\\artifact-finder-manifest.json"; }
+function legacyManifestPath(){ return SCANROOT?(SCANROOT+"\\_Processed\\artifact-finder-manifest.json"):""; }
 function loadManifest(){
+  /* toolkit manifest (new home, written) + legacy scan-root manifest (read-only) — deduped
+     so pre-0.4 runs keep their state without double entries once they migrate on next write */
   MANIFEST=[];
-  try{ if(SCANROOT && fileExists(manifestPath())){ var m=JSON.parse(readUtf8(manifestPath())); if(m && m.length!=null) MANIFEST=m; } }
-  catch(e){ appendLog("Manifest unreadable ("+e.message+") — starting a fresh one on next launch."); }
+  var seen={};
+  function take(path,label){
+    try{ if(path && fileExists(path)){ var m=JSON.parse(readUtf8(path)); if(m && m.length!=null){
+      for(var i=0;i<m.length;i++){ var e=m[i]; if(!e) continue;
+        var k=String(e.artifactPath||"").toLowerCase()+"|"+String(e.launchedUtc||"");
+        if(seen[k]) continue; seen[k]=1; MANIFEST.push(e); } } } }
+    catch(er){ appendLog("Manifest unreadable ("+label+": "+er.message+") — ignoring that copy."); }
+  }
+  take(manifestPath(),"toolkit");
+  var lp=legacyManifestPath();
+  if(lp && lp.toLowerCase()!==manifestPath().toLowerCase()) take(lp,"legacy scan-root");
 }
 function appendManifest(entry){
   MANIFEST.push(entry);
   try{
-    ensureFolder(SCANROOT+"\\_Processed");
+    ensureFolder(TOOLDIR+"\\_Processed");
     writeUtf8(manifestPath(), JSON.stringify(MANIFEST,null,2));
   }catch(e){ appendLog("Could not write manifest: "+e.message); }
+}
+
+/* ---------- target hostname + new-convention outputs (v0.4) ----------
+   Family convention: <toolkitDir>\_Processed\<Hostname>\<AppName>\  — no per-run stamp folder;
+   the tools' own datetime-stamped CSV names keep runs apart. Effective host per row:
+   multi-host scan → the row's detected host (field covers "(root)" rows); otherwise the field
+   wins so the operator can overwrite a bad guess. Empty → [Process] refuses. */
+function appFor(cat){ return String(cat.wrapper||"").replace(/-Wrapper$/i,""); }
+function realHosts(){ var h=distinctHosts(), out=[]; for(var i=0;i<h.length;i++){ if(h[i] && h[i]!=="(root)") out.push(h[i]); } return out; }
+function fieldHost(){ return sanit(trimStr($("hostName").value)).replace(/^-+|-+$/g,""); }
+function hostFor(row){
+  var f=fieldHost(), multi=realHosts().length>1;
+  if(multi && row.host && row.host!=="(root)") return sanit(row.host);
+  if(f) return f;
+  if(row.host && row.host!=="(root)") return sanit(row.host);
+  return "";
+}
+function newOutDir(row){ var h=hostFor(row); return h?(TOOLDIR+"\\_Processed\\"+h+"\\"+appFor(row.cat)):""; }
+function guessHostField(){
+  if(HOST_TOUCHED && trimStr($("hostName").value)) return;   // operator's own value stands
+  var g="", rh=realHosts();
+  if(rh.length===1) g=rh[0];
+  else if(ROOTAT) g=ROOTAT.host;
+  if(g) $("hostName").value=sanit(g);
+}
+function fmtDT(d){ function p(x){return (x<10?"0":"")+x;}
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); }
+function scanToolkitProcessed(){
+  /* the toolkit's own _Processed tree is small and ours — FSO recursion is safe here
+     (unlike the case tree, which is enumerated with dir /s /b for MAX_PATH reasons) */
+  TKFILES=[];
+  var root=TOOLDIR+"\\_Processed";
+  if(!folderExists(root)) return;
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  function walk(f,depth){
+    if(depth>6 || TKFILES.length>20000) return;
+    try{
+      var fe=new Enumerator(f.Files);
+      for(; !fe.atEnd(); fe.moveNext()){ var fl=fe.item(), n=fl.Name+"";
+        if(!/\.(csv|html?)$/i.test(n)) continue;
+        var ms=0, mt="";
+        try{ var d=new Date(fl.DateLastModified); ms=d.getTime(); mt=fmtDT(d); }catch(ed){}
+        TKFILES.push({p:(fl.Path+"").toLowerCase(), ms:ms, mtime:mt});
+      }
+      var se=new Enumerator(f.SubFolders);
+      for(; !se.atEnd(); se.moveNext()) walk(se.item(),depth+1);
+    }catch(e){}
+  }
+  try{ walk(fso.GetFolder(root),0); }catch(e){}
+}
+function newestUnder(dir){
+  if(!dir) return null;
+  var ol=(String(dir)+"\\").toLowerCase(), best=null;
+  for(var i=0;i<TKFILES.length;i++){ var t=TKFILES[i];
+    if(t.p.substring(0,ol.length)!==ol) continue;
+    if(!best || t.ms>best.ms) best=t; }
+  return best;
 }
 
 /* ================= SCAN ================= */
@@ -568,6 +658,8 @@ function classify(lstPath){
       var ca=attrib(cp); LEGACY[ca.host.toLowerCase()+"|"+lk]=cp; } }
   }
   loadManifest();
+  scanToolkitProcessed();
+  guessHostField();
   for(var r=0;r<ROWS.length;r++) computeStatus(ROWS[r]);
   sortRows();
   // multi-host scans start with host groups collapsed (tidy first paint); single host opens expanded
@@ -615,13 +707,17 @@ function sortRows(){
 function stampOfOutDir(d){ var m=String(d).match(/_(\d{8}_\d{6})$/); if(!m) return "";
   var s=m[1]; return s.substring(0,4)+"-"+s.substring(4,6)+"-"+s.substring(6,8)+" "+s.substring(9,11)+":"+s.substring(11,13); }
 function outDirHasCsv(outDir){
+  /* "has output" — csv anywhere below, or an .html report (MFT). Sources: the scan root's
+     old-convention listing (PROCCSV), the toolkit _Processed walk (TKFILES), then a live check
+     for folders created after those passes ran. */
   if(!outDir) return false;
-  var ol=String(outDir).toLowerCase();
-  for(var i=0;i<PROCCSV.length;i++){ if(PROCCSV[i].substring(0,ol.length)===ol) return true; }
+  var ol=String(outDir).toLowerCase(), olp=ol+"\\";
+  for(var i=0;i<PROCCSV.length;i++){ if(PROCCSV[i].substring(0,olp.length)===olp) return true; }
+  for(var t=0;t<TKFILES.length;t++){ if(TKFILES[t].p.substring(0,olp.length)===olp) return true; }
   if(folderExists(outDir)){ // outDir created after the listing (same session) — check live
     try{ var fso=new ActiveXObject("Scripting.FileSystemObject");
       var e=new Enumerator(fso.GetFolder(outDir).Files);
-      for(; !e.atEnd(); e.moveNext()){ if(/\.csv$/i.test(e.item().Name+"")) return true; } }catch(er){}
+      for(; !e.atEnd(); e.moveNext()){ if(/\.(csv|html?)$/i.test(e.item().Name+"")) return true; } }catch(er){}
   }
   return false;
 }
@@ -639,7 +735,12 @@ function computeStatus(row){
     row.status="launch"; row.statusDate=String(best.launchedUtc||"").substring(0,16).replace("T"," ");
     return;
   }
-  // 2. run-folder fallback (manifest lost): _Processed\<host>_<outKey>_* containing a csv
+  // 2. new-convention folder (toolkit _Processed\<host>\<app>) with output — covers wrapper
+  //    runs done outside the finder too (same convention family-wide since v0.4)
+  var nd=newOutDir(row);
+  if(nd){ var nb=newestUnder(nd);
+    if(nb){ row.status="proc"; row.statusDate=nb.mtime; row.lastOut=nd; return; } }
+  // 3. old run-folder fallback (pre-0.4 runs): <scanRoot>\_Processed\<host>_<outKey>_* containing a csv
   var pref=("\\_processed\\"+sanit(row.host)+"_"+row.outKey+"_").toLowerCase();
   for(var c=0;c<PROCCSV.length;c++){
     var idx=PROCCSV[c].indexOf(pref);
@@ -648,7 +749,7 @@ function computeStatus(row){
       row.statusDate=stampOfOutDir(seg.split("\\")[0])||"";
       return; }
   }
-  // 3. legacy heuristic (advisory only)
+  // 4. legacy heuristic (advisory only)
   if(LEGACY[row.host.toLowerCase()+"|"+row.key]){ row.status="legacy"; return; }
   row.status="none";
 }
@@ -880,7 +981,7 @@ function buildCmd(row){
   if(!cat.wrapper) return "(no wrapper tool yet)";
   var hta=WPATH[cat.wrapper]||(TOOLDIR+"\\"+cat.wrapper+".hta");
   if(!cat.cli) return 'mshta.exe "'+hta+'"   (then paste: '+row.path+')';
-  var outDir=SCANROOT+"\\_Processed\\"+sanit(row.host)+"_"+row.outKey+"_<datetime>";
+  var outDir=newOutDir(row)||(TOOLDIR+"\\_Processed\\<hostname?>\\"+appFor(cat));
   return 'mshta.exe "'+hta+'" "'+row.path+'" "'+outDir+'"'+($("optAuto").checked?" /auto":"");
 }
 function renderDetail(row){
@@ -925,7 +1026,7 @@ function doProcess(row){
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){ getTool(cat); return; }
   if(row.status==="proc"){
-    if(!confirm("This artifact already has output"+(row.statusDate?(" from "+row.statusDate):"")+".\n\nRe-process it? (A new _Processed run folder is created; nothing is overwritten.)")) return;
+    if(!confirm("This artifact already has output"+(row.statusDate?(" from "+row.statusDate):"")+".\n\nRe-process it? (New output lands in the same _Processed\\<host>\\<app> folder; the tools' datetime-stamped filenames keep runs apart.)")) return;
   }
   var sh=new ActiveXObject("WScript.Shell");
   if(!cat.cli){
@@ -940,12 +1041,18 @@ function doProcess(row){
     render(); if(DETROW===row) renderDetail(row);
     return;
   }
-  var outDir=SCANROOT+"\\_Processed\\"+sanit(row.host)+"_"+row.outKey+"_"+nowStamp();
+  var host=hostFor(row);
+  if(!host){
+    setStatus("Target hostname is required — this row has no detected host. Type the hostname in the box above, then [Process] again.","err");
+    try{ $("hostName").focus(); }catch(ef){}
+    return;
+  }
+  var outDir=TOOLDIR+"\\_Processed\\"+host+"\\"+appFor(cat);
   if(!ensureFolder(outDir)){ setStatus("Could not create output folder: "+outDir,"err"); return; }
   var cmd='mshta.exe "'+hta+'" "'+row.path+'" "'+outDir+'"'+($("optAuto").checked?" /auto":"");
   try{ sh.Run(cmd,1,false); }
   catch(e3){ setStatus("Could not launch "+cat.wrapper+": "+e3.message,"err"); return; }
-  appendManifest({artifactPath:row.path, key:row.key, host:row.host, wrapper:cat.wrapper, outDir:outDir, launchedUtc:nowIso(), cmd:cmd});
+  appendManifest({artifactPath:row.path, key:row.key, host:row.host, hostUsed:host, app:appFor(cat), wrapper:cat.wrapper, outDir:outDir, launchedUtc:nowIso(), cmd:cmd});
   row.status="launch"; row.statusDate=nowIso().substring(0,16).replace("T"," "); row.lastOut=outDir;
   setStatus(cat.wrapper+" launched for "+row.host+" "+row.label+" — review inside the tool, then start it. Rescan afterwards to see ✔.","ok");
   appendLog("Launched: "+cmd);
@@ -972,7 +1079,10 @@ function outDirsNewestFirst(row){
   ents.sort(function(a,b){ var x=String(a.launchedUtc||""), y=String(b.launchedUtc||""); return x<y?1:(x>y?-1:0); });
   for(i=0;i<ents.length;i++){ var d=String(ents[i].outDir), dl=d.toLowerCase();
     if(!seen[dl]){ seen[dl]=1; dirs.push(d); } }
-  // manifest lost/foreign runs: reconstruct run folders from the CSVs seen under _Processed
+  // new-convention folder (covers standalone wrapper runs the manifest never saw)
+  var nd=newOutDir(row);
+  if(nd && !seen[nd.toLowerCase()] && newestUnder(nd)){ seen[nd.toLowerCase()]=1; dirs.push(nd); }
+  // manifest lost/foreign runs: reconstruct old-convention run folders from the scan-root CSVs
   var pref=("\\_processed\\"+sanit(row.host)+"_"+row.outKey+"_").toLowerCase(), fb=[];
   for(i=0;i<PROCCSV.length;i++){ var idx=PROCCSV[i].indexOf(pref);
     if(idx<0) continue;
@@ -980,34 +1090,46 @@ function outDirsNewestFirst(row){
     var dir2=PROCCSV[i].substring(0,idx+12)+run;
     if(!seen[dir2]){ seen[dir2]=1; fb.push(dir2); } }
   var all=dirs.concat(fb);                                     // newest run wins, manifest or not
-  all.sort(function(a,b){ var x=String(a).match(/_(\d{8}_\d{6})$/), y=String(b).match(/_(\d{8}_\d{6})$/);
-    x=x?x[1]:""; y=y?y[1]:""; return x<y?1:(x>y?-1:0); });
+  function rk(d){                                              // recency key: old dirs by name stamp, new dirs by newest file inside
+    var m=String(d).match(/_(\d{8}_\d{6})$/); if(m) return m[1].replace("_","");
+    var nb=newestUnder(d);
+    if(nb && nb.ms){ var dt=new Date(nb.ms); function p(x){return (x<10?"0":"")+x;}
+      return ""+dt.getFullYear()+p(dt.getMonth()+1)+p(dt.getDate())+p(dt.getHours())+p(dt.getMinutes())+p(dt.getSeconds()); }
+    return "";
+  }
+  all.sort(function(a,b){ var x=rk(a), y=rk(b); return x<y?1:(x>y?-1:0); });
   return all;
 }
 function pickOpenTarget(row,dir){
-  var csv=[], html=[], i, best;
+  /* shared _Processed\<host>\<app> folders accumulate runs — pick the NEWEST matching file
+     (old per-run stamped folders held one run, where newest == only). */
+  var csv=[], html=[], i;
   try{ var fso=new ActiveXObject("Scripting.FileSystemObject");
     var e=new Enumerator(fso.GetFolder(dir).Files);
-    for(; !e.atEnd(); e.moveNext()){ var f=e.item(), n=f.Name+"";
-      if(/\.csv$/i.test(n)) csv.push({path:f.Path+"", name:n, size:f.Size-0});
-      else if(/\.html?$/i.test(n)) html.push({path:f.Path+"", name:n, size:f.Size-0}); }
+    for(; !e.atEnd(); e.moveNext()){ var f=e.item(), n=f.Name+"", ms=0;
+      try{ ms=new Date(f.DateLastModified).getTime(); }catch(ed){}
+      if(/\.csv$/i.test(n)) csv.push({path:f.Path+"", name:n, size:f.Size-0, ms:ms});
+      else if(/\.html?$/i.test(n)) html.push({path:f.Path+"", name:n, size:f.Size-0, ms:ms}); }
   }catch(er){}
-  if(row.key==="mft" && html.length){                          // MFTECmd's deliverable is the report
-    best=html[0]; for(i=1;i<html.length;i++){ if(html[i].size>best.size) best=html[i]; }
-    return {path:best.path, others:csv.length};
-  }
-  if(!csv.length){                                             // CSVs nested below the run folder
+  function newest(arr){ var b=null; for(var j=0;j<arr.length;j++){ if(!b || arr[j].ms>b.ms) b=arr[j]; } return b; }
+  if(row.key==="mft" && html.length)                           // MFTECmd's deliverable is the report
+    return {path:newest(html).path, others:csv.length};
+  if(!csv.length){                                             // CSVs nested below the run folder (e.g. MFT csv\ subdir)
     var ol=(String(dir)+"\\").toLowerCase(), sub=[];
     for(i=0;i<PROCCSV.length;i++){ if(PROCCSV[i].substring(0,ol.length)===ol) sub.push(PROCCSV[i]); }
-    if(sub.length){ sub.sort(); return {path:sub[0], others:sub.length-1}; }
+    for(i=0;i<TKFILES.length;i++){ if(TKFILES[i].p.substring(0,ol.length)===ol && /\.csv$/i.test(TKFILES[i].p)) sub.push(TKFILES[i].p); }
+    if(sub.length){ sub.sort(); return {path:sub[sub.length-1], others:sub.length-1}; }   // stamped names — last ≈ newest
     return null;
   }
+  var pick=null;
   if(row.key==="jump"){                                        // jump lists: open on Automatic; the JLECmd wrapper auto-pairs the Custom sibling
-    for(i=0;i<csv.length;i++){ if(/_AutomaticDestinations\.csv$/i.test(csv[i].name)) return {path:csv[i].path, others:csv.length-1}; } }
+    var ja=[]; for(i=0;i<csv.length;i++){ if(/_AutomaticDestinations\.csv$/i.test(csv[i].name)) ja.push(csv[i]); }
+    if(ja.length) pick=newest(ja); }
   if(row.key==="srum"){                                        // SRUM: the exfil table is the headline
-    for(i=0;i<csv.length;i++){ if(/networkusage/i.test(csv[i].name)) return {path:csv[i].path, others:csv.length-1}; } }
-  best=csv[0]; for(i=1;i<csv.length;i++){ if(csv[i].size>best.size) best=csv[i]; }
-  return {path:best.path, others:csv.length-1};
+    var su=[]; for(i=0;i<csv.length;i++){ if(/networkusage/i.test(csv[i].name)) su.push(csv[i]); }
+    if(su.length) pick=newest(su); }
+  if(!pick) pick=newest(csv);
+  return {path:pick.path, others:csv.length-1};
 }
 function openProcessed(row){
   var cat=row.cat;
@@ -1192,6 +1314,13 @@ function init(){
   };
   $("optAuto").onclick=function(){ saveSettings(); if(DETROW) renderDetail(DETROW); };
   $("optShowC").onclick=function(){ SHOWC=this.checked; saveSettings(); if(ROWS.length) render(); };
+  var hTimer=null;
+  $("hostName").onkeyup=function(){ HOST_TOUCHED=true;        // operator's value — guesses stop overwriting it
+    if(hTimer) window.clearTimeout(hTimer);
+    hTimer=window.setTimeout(function(){                       // statuses + launch commands depend on the host
+      if(ROWS.length){ for(var i=0;i<ROWS.length;i++) computeStatus(ROWS[i]); render(); if(DETROW) renderDetail(DETROW); }
+    },300);
+  };
   $("logToggle").onclick=function(){ var l=$("log");
     if(l.style.display==="none"||!l.style.display){ l.style.display="block"; this.innerHTML="Hide log"; }
     else { l.style.display="none"; this.innerHTML="Show log"; } };
@@ -1252,6 +1381,12 @@ function init(){
     appendLog("Heads-up: running from a network location ("+TOOLDIR+"). Zone policy may block the UTF-8 reader; the app falls back to ANSI IO automatically.");
 }
 
+/* ---------- help ---------- */
+var GITHUB="https://github.com/bpmorris22/DFIR-Artifact-Finder";
+function openUrl(u){ try{ new ActiveXObject("WScript.Shell").Run('"'+u+'"',1,false); }catch(e){ setStatus("Could not open browser: "+e.message,"err"); } }
+function openHelp(){ try{ $("helpVer").innerHTML="v"+APP_VERSION; }catch(e){} showEl("helpModal",true); }
+function closeHelp(){ showEl("helpModal",false); }
+
 /* ---------- self-update: quiet check of this app's GitHub Releases; one-click download of a newer .hta ---------- */
 var SELF_REPO="bpmorris22/DFIR-Artifact-Finder", SELF_HTA="DFIR-Artifact-Finder.hta", SELF_LATEST="", SELF_ASSET_URL="";
 function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
@@ -1302,5 +1437,39 @@ function doSelfUpdate(){
 }
 window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
 </script>
+<div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
+  <div class="mcard">
+    <span class="x" onclick="closeHelp()" title="Close">&times;</span>
+    <h2>DFIR Artifact Finder <span class="muted" style="font-size:13px;font-weight:400" id="helpVer"></span></h2>
+    <div class="gh muted">GitHub: <span class="lnk" onclick="openUrl(GITHUB)">https://github.com/bpmorris22/DFIR-Artifact-Finder</span></div>
+    <p>Master triage launcher for the wrapper family. Point it at a case folder (Velociraptor / KAPE collection trees), it scans recursively, identifies every artifact a wrapper can process, and presents a host-grouped launch board — <b>[Process]</b> opens the right wrapper pre-filled, <b>[Open]</b> loads already-processed output back into its wrapper for analysis. The finder never parses artifact contents itself.</p>
+    <h3>Quick start</h3>
+    <ul>
+      <li>Keep the wrapper <code>.hta</code>s next to this app (the toolkit folder) — the strip at the bottom of Scan control shows what's present; missing ones download from GitHub on demand.</li>
+      <li>Pick a case folder &rarr; <b>Scan</b>. Confirm the <b>Target hostname</b> guess (it names the output folders). Click <b>[Process]</b> on a row, review inside the wrapper, run it, rescan to see &#10004;.</li>
+      <li><b>[Open]</b> on a processed row hands the newest output straight back to the wrapper — no reprocessing.</li>
+    </ul>
+    <h3>Where outputs go</h3>
+    <ul>
+      <li>All processing lands in <code>_Processed\&lt;Hostname&gt;\&lt;App&gt;\</code> <b>next to this app</b> (family convention — the wrappers use the same layout when run standalone). One folder per host per tool; the tools' datetime-stamped filenames keep repeat runs apart.</li>
+      <li><b>Target hostname</b> is required before processing. It is guessed from the scan (<code>Collection-&lt;host&gt;-…</code> segments or the folder layout) — overwrite it if wrong. Multi-host scans use each row's own detected host; the field covers rows whose host could not be derived.</li>
+      <li>An append-only manifest (<code>_Processed\artifact-finder-manifest.json</code>) ties every launch to its exact artifact path. Old-convention output (<code>&lt;scanRoot&gt;\_Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;stamp&gt;</code>) is still recognised for status and [Open], never written.</li>
+    </ul>
+    <h3>Command line</h3>
+    <p><code>mshta "DFIR-Artifact-Finder.hta" ["&lt;scanRoot&gt;"] [/scan]</code></p>
+    <ul>
+      <li><code>&lt;scanRoot&gt;</code> — prefills the case folder. &nbsp; <code>/scan</code> — scan immediately on open.</li>
+      <li>Wrappers are launched as <code>mshta "&lt;Tool&gt;-Wrapper.hta" "&lt;artifact&gt;" "&lt;outDir&gt;" [/auto]</code> — <b>bulk mode</b> adds <code>/auto</code> so they process on open.</li>
+    </ul>
+    <h3>Notes</h3>
+    <ul>
+      <li>Status pills: &#9679; not processed &middot; &#9684; launched &middot; &#10004; processed &middot; &#10004;? legacy output found &middot; &mdash; no tool yet. Greyed rows are the roadmap (no wrapper yet).</li>
+      <li>Enumeration uses <code>dir /s /b</code> (long Velociraptor paths kill FSO recursion); <code>results\</code> JSON, <code>.idx</code> and hive-transaction sidecars are skipped as noise.</li>
+      <li>Velociraptor's <code>C%3A</code>-style paths are handled — launches don't go through cmd, so the <code>%</code> survives.</li>
+      <li>Columns are resizable — drag a header's right edge; double-click the edge to reset.</li>
+    </ul>
+    <p class="muted" style="font-size:11px">MIT © 2026 Ben Morris — click the link above for the full README &amp; releases.</p>
+  </div>
+</div>
 </body>
 </html>

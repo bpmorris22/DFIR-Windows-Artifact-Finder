@@ -26,7 +26,7 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
    mshta.exe "<Tool>-Wrapper.hta" "<artifactPath>" "<outDir>" [/auto]
    ```
    The wrapper opens in its own window so you can review and start processing there. An opt-in **bulk** checkbox adds `/auto` (process immediately) for launch-many sessions — default **off**.
-3. **Skip what's done** — outputs land in `<scanRoot>\_Processed\<Host>_<Artifact>_<yyyyMMdd_HHmmss>\`, and an append-only manifest ties runs back to exact artifact paths, so already-processed evidence shows as **done** on the next scan and isn't re-run by accident.
+3. **Skip what's done** — outputs land in `_Processed\<Hostname>\<App>\` **next to this app** (the mandatory **Target hostname** field names the folder — guessed from the scan, overwrite it if wrong; the wrappers use the same layout when run standalone), and an append-only manifest ties runs back to exact artifact paths, so already-processed evidence shows as **done** on the next scan and isn't re-run by accident. **Open** on a processed row loads the newest output straight back into its wrapper — no reprocessing. Old-convention output (`<scanRoot>\_Processed\<Host>_<Artifact>_<stamp>\`) is still recognised, never written.
 
 ## Quick start
 
