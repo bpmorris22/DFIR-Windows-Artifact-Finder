@@ -19,6 +19,10 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
 | Registry hives (SYSTEM/SOFTWARE/SAM/SECURITY/NTUSER/UsrClass) | [RECmd-Wrapper](https://github.com/bpmorris22/RECmd-Wrapper) |
 | `$Recycle.Bin` / SUM / WebCache | flagged on the board (no wrapper yet) |
 
+![The launch board](images/launch-board.png)
+
+> The board after scanning a two-host case: artifacts grouped per host, type filters, per-row **Process** / **Open folder**, per-host **Process all**. Screenshot uses synthetic data (fabricated hosts `ACME-WS01` / `ACME-SRV02`) — no real case data.
+
 ## How it works
 
 1. **Scan** — enumerates the tree with `dir /s /b` (robust on the very long paths Velociraptor/KAPE trees produce, where FSO recursion fails), classifies each file against the artifact catalog, and **groups results by host**.
