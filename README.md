@@ -23,6 +23,10 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
 
 > The board after scanning a two-host case: artifacts grouped per host, type filters, per-row **Process** / **Open folder**, per-host **Process all**. Screenshot uses synthetic data (fabricated hosts `ACME-WS01` / `ACME-SRV02`) — no real case data.
 
+## Field manual
+
+A single-file **[Field Manual](docs/DFIR-Toolkit-Manual.html)** for the whole toolkit lives in this repo — every tool's purpose, features, scoring tables, CLI contract and suggested workflows, with synthetic-data screenshots. GitHub won't render it inline: [download the raw file](https://raw.githubusercontent.com/bpmorris22/DFIR-Artifact-Finder/main/docs/DFIR-Toolkit-Manual.html) and open it in any browser (fully self-contained, ~5 MB).
+
 ## How it works
 
 1. **Scan** — enumerates the tree with `dir /s /b` (robust on the very long paths Velociraptor/KAPE trees produce, where FSO recursion fails), classifies each file against the artifact catalog, and **groups results by host**.
