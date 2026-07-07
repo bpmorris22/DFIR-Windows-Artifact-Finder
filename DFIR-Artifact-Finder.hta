@@ -234,7 +234,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.8.0";
+var APP_VERSION = "0.9.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace — survives a crash where the UI can't be seen; overwritten each launch */
@@ -304,8 +304,8 @@ var CATALOG = [
    desc:"Automatic/Custom destinations — interactive user activity via JLECmd"},
   {key:"rbin",    name:"Recycle Bin",   outKey:"RecycleBin",gran:"host",   wrapper:"", repo:"", cli:false,
    desc:"$Recycle.Bin contents ($I/$R) — wrapper planned"},
-  {key:"usnj",    name:"$UsnJrnl $J",   outKey:"UsnJrnl",   gran:"file",   wrapper:"", repo:"", cli:false,
-   desc:"USN journal — MFTECmd-Wrapper support planned"},
+  {key:"usnj",    name:"$UsnJrnl $J",   outKey:"UsnJrnl",   gran:"file",   wrapper:"MFTECmd-Wrapper",       repo:"MFTECmd-Wrapper",       cli:true,
+   desc:"USN journal ($J) — parsed with MFTECmd via MFTECmd-Wrapper; auto-pairs the volume $MFT when present, else journal-only"},
   {key:"reg",     name:"Registry hives",outKey:"Registry",  gran:"host",   wrapper:"RECmd-Wrapper", repo:"RECmd-Wrapper", cli:true,
    desc:"SYSTEM / SOFTWARE / SAM / SECURITY / NTUSER / UsrClass — persistence triage via RECmd batch (Kroll)"},
   {key:"sum",     name:"SUM database",  outKey:"SUM",       gran:"file",   wrapper:"", repo:"", cli:false,
@@ -1319,7 +1319,7 @@ function pickOpenTarget(row,dir){
       else if(/\.html?$/i.test(n)) html.push({path:f.Path+"", name:n, size:f.Size-0, ms:ms}); }
   }catch(er){}
   function newest(arr){ var b=null; for(var j=0;j<arr.length;j++){ if(!b || arr[j].ms>b.ms) b=arr[j]; } return b; }
-  if(row.key==="mft" && html.length)                           // MFTECmd's deliverable is the report
+  if((row.key==="mft" || row.key==="usnj") && html.length)     // MFTECmd's deliverable is the report ($MFT and $J both build one)
     return {path:newest(html).path, others:csv.length};
   if(!csv.length){                                             // CSVs nested below the run folder (e.g. MFT csv\ subdir)
     var ol=(String(dir)+"\\").toLowerCase(), sub=[];

@@ -12,12 +12,12 @@ It never opens or parses artifact contents itself — it is a **scanner + regist
 | Prefetch (`.pf`) | [PECmd-Wrapper](https://github.com/bpmorris22/PECmd-Wrapper) |
 | `Amcache.hve` | [AmcacheParser-Wrapper](https://github.com/bpmorris22/AmcacheParser-Wrapper) |
 | SRUM (`SRUDB.dat`) | [SrumECmd-Wrapper](https://github.com/bpmorris22/SrumECmd-Wrapper) |
-| `$MFT` | [MFTECmd-Wrapper](https://github.com/bpmorris22/MFTECmd-Wrapper) |
+| `$MFT` / `$UsnJrnl:$J` (USN journal) | [MFTECmd-Wrapper](https://github.com/bpmorris22/MFTECmd-Wrapper) |
 | SQLite databases | [SQLECmd-Wrapper](https://github.com/bpmorris22/SQLECmd-Wrapper) |
 | LNK files | [LECmd-Wrapper](https://github.com/bpmorris22/LECmd-Wrapper) |
 | Jump lists (Automatic/Custom destinations) | [JLECmd-Wrapper](https://github.com/bpmorris22/JLECmd-Wrapper) |
 | Registry hives (SYSTEM/SOFTWARE/SAM/SECURITY/NTUSER/UsrClass) | [RECmd-Wrapper](https://github.com/bpmorris22/RECmd-Wrapper) |
-| `$Recycle.Bin` / `$UsnJrnl` / SUM / WebCache | flagged on the board (no wrapper yet) |
+| `$Recycle.Bin` / SUM / WebCache | flagged on the board (no wrapper yet) |
 
 ## How it works
 
