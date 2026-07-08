@@ -105,7 +105,10 @@
   .tk{display:inline-block;font-size:10px;border:1px solid #30363d;border-radius:10px;padding:1px 8px;margin:0 4px 4px 0}
   .tk.have{border-color:#2a5a3a;color:#3fb950}
   .tk.miss{border-color:#8b3a3a;color:#ff6b6b}
+  .tk.stale{border-color:#8a5a2a;color:#f0883e}
   .tk .lnk{margin-left:5px}
+  .tk .upd{margin-left:5px;color:#f0883e}
+  .tk .upd:hover{text-decoration:underline}
   .sumbad{color:#ff6b6b;font-size:10px;font-weight:600}
   .sumok{color:#3fb950;font-size:10px}
   .dl{font-family:Consolas,"Courier New",monospace;font-size:11px;max-height:220px;overflow:auto;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px;margin:4px 0;white-space:normal;word-break:break-word}
@@ -241,7 +244,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.13.2";
+var APP_VERSION = "0.14.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -671,6 +674,7 @@ function invOpen(key){
   var dir=TOOLDIR+"\\_Processed\\"+host+"\\"+app;
   var target=pickOpenTarget({key:cat.key, cat:cat}, dir);
   if(!target){ setStatus("No output files found in "+dir,"err"); return; }
+  ensureFreshWrapper(cat);              // stale? offer to update before opening the output in it (prompted)
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){
     setStatus(cat.wrapper+".hta not found - downloading it first…","muted");
@@ -962,6 +966,7 @@ function statusPill(r){
   return '<span class="st st-none">&#9679; not processed</span>';
 }
 var WPATH={};   // wrapper name -> resolved full HTA path ("" if not found); refreshed by renderToolStrip()
+var WVER={};    // wrapper name -> {repo, local, latest, stale} - filled async by checkWrapperUpdates()
 function verCmp(a,b){ a=String(a).split("."); b=String(b).split("."); var n=Math.max(a.length,b.length);
   for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0, y=parseInt(b[i],10)||0; if(x!==y) return x<y?-1:1; } return 0; }
 function htaVersion(path){
@@ -1198,6 +1203,8 @@ function doProcess(row){
   if(!cat.wrapper){ setStatus("No wrapper tool for "+cat.name+" yet","err"); return; }
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){ getTool(cat); return; }
+  ensureFreshWrapper(cat);              // stale? offer to update before launching (prompted)
+  hta=WPATH[cat.wrapper]||hta;          // re-resolve in case the update swapped the copy in
   if(row.status==="proc"){
     if(!confirm("This artifact already has output"+(row.statusDate?(" from "+row.statusDate):"")+".\n\nRe-process it? (New output lands in the same _Processed\\<host>\\<app> folder; the tools' datetime-stamped filenames keep runs apart.)")) return;
   }
@@ -1371,6 +1378,7 @@ function openProcessed(row){
     if(lp && fileExists(lp)) target={path:lp, others:0, legacy:true};
   }
   if(!target){ setStatus("No processed output found for this artifact - rescan first, or [Re-process] it.","err"); return; }
+  ensureFreshWrapper(cat);              // stale? offer to update before opening the output in it (prompted)
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){
     setStatus(cat.wrapper+".hta not found - downloading it first…","muted");
@@ -1428,9 +1436,15 @@ function renderToolStrip(){
     var p=resolveWrapper(c);
     WPATH[c.wrapper]=p;
     var local=p && parentDir(p).toLowerCase()===TOOLDIR.toLowerCase();
-    h+='<span class="tk '+(p?"have":"miss")+'" title="'+esc(p||"not found next to this app or in sibling dev folders")+'">'
-      +esc(c.wrapper)+(p?(" &#10004;"+(local?"":' <span class="muted">(dev folder)</span>')):" missing")
-      +(p?"":' <span class="lnk" data-get="'+esc(c.key)+'">get</span>')
+    var wv=WVER[c.wrapper], stale=!!(p && wv && wv.stale);   // GitHub release newer than the copy we'd launch
+    var tkCls = p ? (stale?"have stale":"have") : "miss";
+    var tip = p ? (stale?(c.wrapper+" v"+(wv.local||"?")+" installed - v"+wv.latest+" available on GitHub"):p)
+                : "not found next to this app or in sibling dev folders";
+    h+='<span class="tk '+tkCls+'" title="'+esc(tip)+'">'
+      +esc(c.wrapper)
+      +(p?((stale?(' <span class="muted">v'+esc(wv.local||"?")+'</span>'):" &#10004;")+(local?"":' <span class="muted">(dev folder)</span>')):" missing")
+      +(p?(stale?(' <span class="lnk upd" data-upd="'+esc(c.key)+'" title="Download v'+esc(wv.latest)+' from GitHub and replace the copy next to this app">update &#8594; v'+esc(wv.latest)+'</span>'):"")
+         :(' <span class="lnk" data-get="'+esc(c.key)+'">get</span>'))
       +(c.cli?'':' <span class="muted" title="CLI retrofit pending - Process opens it bare with the path on your clipboard">(manual)</span>')+'</span>';
   }
   /* shared IOC list - IOC.csv is the editable source; every wrapper auto-loads the flattened IOC.txt at launch */
@@ -1759,6 +1773,8 @@ function init(){
     if(cp){ try{ window.clipboardData.setData("Text",cp); setStatus("Copied to clipboard","ok"); }catch(ec){ setStatus("Copy failed","err"); } return; }
     var gk=t.getAttribute("data-get");
     if(gk){ getTool(CATBYKEY[gk]); return; }
+    var uk=t.getAttribute("data-upd");
+    if(uk){ updateWrapper(CATBYKEY[uk]); return; }
     var im=t.getAttribute("data-ioc");
     if(im){ iocEdit(im); return; }
     if(t.getAttribute("data-iocadd")){ iocAddRow(); return; }
@@ -1872,7 +1888,62 @@ function doSelfUpdate(){
     } else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log; download manually from GitHub if needed.","err"); }
   }catch(e){ setStatus("Self-update failed: "+e.message,"err"); }
 }
-window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }catch(e){} };
+/* ---------- wrapper self-update: quiet per-wrapper GitHub Releases check + one-click update ----------
+   Mirrors checkSelfUpdate, but for every wrapper HTA present next to this app (or resolved from a sibling
+   dev folder). Compares the release tag_name against the APP_VERSION of the copy we'd actually launch, and
+   flags stale ones amber in the toolkit strip. The [update] link (and the "update first?" prompt before
+   Open/Process) reuses getTool - it downloads the current .hta into the toolkit folder, overwriting. */
+function checkWrapperUpdates(){
+  var seen={};
+  for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i];
+    if(!c.wrapper || !c.repo || seen[c.wrapper]) continue; seen[c.wrapper]=1;
+    var lp=WPATH[c.wrapper]; if(!lp) continue;           // only check wrappers we actually have
+    var lv=htaVersion(lp); if(!lv) continue;             // can't read a local version -> don't guess
+    checkOneWrapper(c, lv);
+  }
+}
+function checkOneWrapper(cat, localVer){
+  try{
+    var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
+    x.open("GET","https://api.github.com/repos/bpmorris22/"+cat.repo+"/releases/latest",true);
+    try{ x.setRequestHeader("User-Agent","DFIR-Artifact-Finder"); }catch(eh){}
+    x.onreadystatechange=function(){ if(x.readyState!==4) return;
+      try{ if(x.status!==200) return; var t=x.responseText+"";
+        var m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
+        var latest=m[1], stale=(verCmp(localVer,latest)<0);
+        WVER[cat.wrapper]={repo:cat.repo, local:localVer, latest:latest, stale:stale};
+        if(stale){ renderToolStrip(); if(SCANROOT) render(); }   // repaint only when there's an amber tile to show
+      }catch(e){}
+    };
+    x.send();
+  }catch(e){}
+}
+function updateWrapper(cat){
+  if(!cat || !cat.wrapper) return false;
+  var ok=getTool(cat,true);                 // downloads the current .hta into TOOLDIR (raw main/master), re-renders the strip
+  var np=WPATH[cat.wrapper];
+  if(ok && np){
+    var nv=htaVersion(np), wv=WVER[cat.wrapper]||(WVER[cat.wrapper]={repo:cat.repo});
+    wv.local=nv; wv.stale=(wv.latest? verCmp(nv,wv.latest)<0 : false);
+    renderToolStrip(); if(SCANROOT) render();
+    if(!wv.stale) setStatus(cat.wrapper+" updated to v"+nv+" - now current.","ok");
+  }
+  return ok;
+}
+/* launch-time gate: if this wrapper is behind its GitHub release, offer to update before opening it.
+   OK -> download the current version first (then launch that);  Cancel -> launch the copy we have. */
+function ensureFreshWrapper(cat){
+  if(!cat || !cat.wrapper) return;
+  var wv=WVER[cat.wrapper]; if(!wv || !wv.stale) return;
+  if(confirm(cat.wrapper+" is out of date.\n\nInstalled:  v"+(wv.local||"?")+"\nLatest on GitHub:  v"+wv.latest
+    +"\n\nDownload and install the update before opening it?\n\n(OK = update first   ·   Cancel = open the current version)")){
+    updateWrapper(cat);
+  }
+}
+window.onload=function(){ init();
+  try{ window.setTimeout(checkSelfUpdate,600); }catch(e){}
+  try{ window.setTimeout(checkWrapperUpdates,900); }catch(e){}
+};
 </script>
 <div id="helpModal" class="modal hide" onclick="if((event.srcElement||{}).id==='helpModal')closeHelp()">
   <div class="mcard">
@@ -1882,7 +1953,7 @@ window.onload=function(){ init(); try{ window.setTimeout(checkSelfUpdate,600); }
     <p>Master triage launcher for the wrapper family. Point it at a case folder (Velociraptor / KAPE collection trees), it scans recursively, identifies every artifact a wrapper can process, and presents a host-grouped launch board - <b>[Process]</b> opens the right wrapper pre-filled, <b>[Open]</b> loads already-processed output back into its wrapper for analysis. The finder never parses artifact contents itself.</p>
     <h3>Quick start</h3>
     <ul>
-      <li>Keep the wrapper <code>.hta</code>s next to this app (the toolkit folder) - the strip at the bottom of Scan control shows what's present; missing ones download from GitHub on demand.</li>
+      <li>Keep the wrapper <code>.hta</code>s next to this app (the toolkit folder) - the strip at the bottom of Scan control shows what's present; missing ones download from GitHub on demand. A present wrapper that has fallen behind its GitHub release turns <span style="color:#f0883e">amber</span> with an <span style="color:#f0883e">update</span> link; <b>[Open]</b>/<b>[Process]</b> on an out-of-date wrapper prompts to update it first.</li>
       <li>Pick a case folder &rarr; <b>Scan</b>. Confirm the <b>Target hostname</b> guess (it names the output folders). Click <b>[Process]</b> on a row, review inside the wrapper, run it, rescan to see &#10004;.</li>
       <li><b>Process all (N)</b> on a host's header row queues every unprocessed tool-ready artifact of that host with <code>/auto</code> - one launch every 3 seconds, each in its own wrapper window. Come back and rescan when the consoles are done.</li>
       <li><b>[Open]</b> on a processed row hands the newest output straight back to the wrapper - no reprocessing.</li>
