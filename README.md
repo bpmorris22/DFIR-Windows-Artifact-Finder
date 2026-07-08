@@ -17,7 +17,9 @@ It never opens or parses artifact contents itself - it is a **scanner + registry
 | LNK files | [LECmd-Wrapper](https://github.com/bpmorris22/LECmd-Wrapper) |
 | Jump lists (Automatic/Custom destinations) | [JLECmd-Wrapper](https://github.com/bpmorris22/JLECmd-Wrapper) |
 | Registry hives (SYSTEM/SOFTWARE/SAM/SECURITY/NTUSER/UsrClass) | [RECmd-Wrapper](https://github.com/bpmorris22/RECmd-Wrapper) |
-| `$Recycle.Bin` / SUM / WebCache | flagged on the board (no wrapper yet) |
+| Recycle Bin (`$I` / `INFO2`) | [RBCmd-Wrapper](https://github.com/bpmorris22/RBCmd-Wrapper) |
+| SUM / User Access Logging (server `Current.mdb`) | [SumECmd-Wrapper](https://github.com/bpmorris22/SumECmd-Wrapper) |
+| WebCache (IE/Edge legacy) | flagged on the board (no wrapper yet) |
 
 ![The launch board](images/launch-board.png)
 
