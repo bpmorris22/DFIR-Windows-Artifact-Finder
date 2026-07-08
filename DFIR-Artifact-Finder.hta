@@ -241,7 +241,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.13.1";
+var APP_VERSION = "0.13.2";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -1378,7 +1378,10 @@ function openProcessed(row){
     hta=WPATH[cat.wrapper]||"";
     if(!hta){ setStatus("Downloaded "+cat.wrapper+".hta but could not resolve it - see log.","err"); return; }
   }
-  var cmd='mshta.exe "'+hta+'" "'+target.path+'"';
+  // pass the output folder (so the wrapper derives the collected host from the _Processed\<host>\ path,
+  // not this machine's name) and the case window (so the reopened data lands with the date filter applied).
+  var openOutDir=parentDir(target.path);
+  var cmd='mshta.exe "'+hta+'" "'+target.path+'" "'+openOutDir+'"'+caseWin(false).args;
   try{ new ActiveXObject("WScript.Shell").Run(cmd,1,false); }
   catch(e){ setStatus("Could not launch "+cat.wrapper+": "+e.message,"err"); return; }
   appendLog("Open output: "+cmd);
