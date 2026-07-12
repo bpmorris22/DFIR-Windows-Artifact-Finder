@@ -245,7 +245,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.15.2";
+var APP_VERSION = "0.15.3";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -677,6 +677,13 @@ function invOpen(key){
   var dir=TOOLDIR+"\\_Processed\\"+host+"\\"+app;
   var target=pickOpenTarget({key:cat.key, cat:cat}, dir);
   if(!target){ setStatus("No output files found in "+dir,"err"); return; }
+  if(/\.html?$/i.test(target.path)){   // report deliverable (e.g. MFTECmd): open the self-contained HTML directly, not via the wrapper (never re-generates)
+    try{ new ActiveXObject("WScript.Shell").Run('cmd /c start "" "'+target.path+'"',0,false);
+      appendLog("Open report (browser): "+target.path);
+      setStatus("Opened report "+baseName(target.path)+" in your browser"+(target.others>0?(" - "+target.others+" CSV(s) in the run folder"):""),"ok"); }
+    catch(eH){ setStatus("Could not open the report: "+eH.message,"err"); }
+    return;
+  }
   ensureFreshWrapper(cat);              // stale? offer to update before opening the output in it (prompted)
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){
@@ -1381,6 +1388,13 @@ function openProcessed(row){
     if(lp && fileExists(lp)) target={path:lp, others:0, legacy:true};
   }
   if(!target){ setStatus("No processed output found for this artifact - rescan first, or [Re-process] it.","err"); return; }
+  if(/\.html?$/i.test(target.path)){   // report deliverable (e.g. MFTECmd): open the self-contained HTML directly, not via the wrapper (never re-generates)
+    try{ new ActiveXObject("WScript.Shell").Run('cmd /c start "" "'+target.path+'"',0,false);
+      appendLog("Open report (browser): "+target.path);
+      setStatus("Opened report "+baseName(target.path)+" in your browser"+(target.others>0?(" - "+target.others+" CSV(s) in the run folder"):""),"ok"); }
+    catch(eH){ setStatus("Could not open the report: "+eH.message,"err"); }
+    return;
+  }
   ensureFreshWrapper(cat);              // stale? offer to update before opening the output in it (prompted)
   var hta=WPATH[cat.wrapper]||"";
   if(!hta){
