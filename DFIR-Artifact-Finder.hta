@@ -245,7 +245,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.15.5";
+var APP_VERSION = "0.15.6";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -352,13 +352,15 @@ function midTrunc(s,n){ s=String(s); if(s.length<=n) return s;
 function fmtSize(n){ if(n==null||n<0) return "-"; if(!n) return "0 B"; var u=["B","KB","MB","GB","TB"], i=0;
   while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+" "+u[i]; }
 function uid(){ return new Date().getTime()+""+Math.floor(Math.random()*100000); }
+function pad2(x){ return (x<10?"0":"")+x; }
+var PROCSEG="\\_processed\\";          // old-convention run-folder marker (always compared lowercase)
 function batEsc(s){ return String(s).replace(/%/g,"%%"); }
 function sanit(s){ return String(s).replace(/[^A-Za-z0-9\.\-]/g,"-"); }
 function slug(s){ var t=String(s).replace(/[^A-Za-z0-9]+/g,"-").replace(/^-+|-+$/g,""); return t||"db"; }
-function nowStamp(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
-  return d.getFullYear()+""+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
-function nowIso(){ var d=new Date(); function p(x){return (x<10?"0":"")+x;}
-  return d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate())+"T"+p(d.getUTCHours())+":"+p(d.getUTCMinutes())+":"+p(d.getUTCSeconds())+"Z"; }
+function nowStamp(){ var d=new Date();
+  return d.getFullYear()+""+pad2(d.getMonth()+1)+pad2(d.getDate())+"_"+pad2(d.getHours())+pad2(d.getMinutes())+pad2(d.getSeconds()); }
+function nowIso(){ var d=new Date();
+  return d.getUTCFullYear()+"-"+pad2(d.getUTCMonth()+1)+"-"+pad2(d.getUTCDate())+"T"+pad2(d.getUTCHours())+":"+pad2(d.getUTCMinutes())+":"+pad2(d.getUTCSeconds())+"Z"; }
 function relPath(p){ if(SCANROOT && p.substring(0,SCANROOT.length).toLowerCase()===SCANROOT.toLowerCase()){
   var r=p.substring(SCANROOT.length); return r.charAt(0)==="\\"?r.substring(1):r; } return p; }
 
@@ -446,6 +448,36 @@ function pollDone(ctx){
   if(ctx.elapsed>1800){ ctx.onTimeout&&ctx.onTimeout(); return; }   // 30-min cap (a dir listing should never take that)
   if(ctx.onTick) ctx.onTick(ctx.elapsed);
   window.setTimeout(function(){ pollDone(ctx); }, 1000);
+}
+/* ---------- shared GitHub download (getTool / field guide / self-update) ----------
+   Tries each URL in order until one succeeds; downloads to a temp file first so a failed
+   transfer never truncates an existing good copy at dest. Synchronous (the UI blocks while
+   PowerShell runs). Returns {ok, log}. */
+function psDownload(urls, dest, show){
+  var fso=new ActiveXObject("Scripting.FileSystemObject");
+  var ps1=fso.GetSpecialFolder(2)+"\\af_dl_"+uid()+".ps1";
+  var dq=String(dest).replace(/'/g,"''");
+  var us=[]; for(var i=0;i<urls.length;i++) us.push("'"+String(urls[i]).replace(/'/g,"''")+"'");
+  var L=[
+    "$ErrorActionPreference='Stop'",
+    "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$tmp=Join-Path $env:TEMP ('af_dl_'+[guid]::NewGuid().ToString('N'))",
+    "$ok=$false",
+    "foreach($u in @("+us.join(",")+")){",
+    "  try{ Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile $tmp -Headers @{ 'User-Agent'='DFIR-Artifact-Finder' }",
+    "       if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }",   // every deliverable (.hta / manual) is >>2 KB
+    "       Copy-Item $tmp '"+dq+"' -Force",
+    "       Write-Output ('GET_OK '+$u); $ok=$true; break }",
+    "  catch{ Write-Output ('miss: '+$u+' -> '+$_.Exception.Message) }",
+    "}",
+    "Remove-Item $tmp -Force -ErrorAction SilentlyContinue",
+    "if(-not $ok){ throw 'download failed' }"
+  ];
+  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }
+  catch(ew){ return {ok:false, log:"could not stage the download script: "+ew.message}; }
+  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], show);
+  try{ fso.DeleteFile(ps1); }catch(e0){}
+  return { ok:(r.log+"").indexOf("GET_OK")>=0, log:r.log };
 }
 
 /* ---------- fs helpers ---------- */
@@ -538,8 +570,8 @@ function guessHostField(){
   else if(ROOTAT) g=ROOTAT.host;
   if(g) $("hostName").value=sanit(g);
 }
-function fmtDT(d){ function p(x){return (x<10?"0":"")+x;}
-  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+" "+p(d.getHours())+":"+p(d.getMinutes()); }
+function fmtDT(d){
+  return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate())+" "+pad2(d.getHours())+":"+pad2(d.getMinutes()); }
 function scanToolkitProcessed(){
   /* the toolkit's own _Processed tree is small and ours - FSO recursion is safe here
      (unlike the case tree, which is enumerated with dir /s /b for MAX_PATH reasons) */
@@ -677,6 +709,16 @@ function invOpen(key){
   var dir=TOOLDIR+"\\_Processed\\"+host+"\\"+app;
   var target=pickOpenTarget({key:cat.key, cat:cat}, dir);
   if(!target){ setStatus("No output files found in "+dir,"err"); return; }
+  openTargetInWrapper(cat, target);
+}
+/* shared open core - hands a processed output back to its wrapper (or the browser for HTML
+   reports), downloading the wrapper from GitHub first if it's missing. Used by the processed
+   inventory and [Open] on a row. The output FOLDER rides as the second CLI arg so the wrapper
+   derives the collected host from the _Processed\<host>\ path, not this machine's name. The case
+   window is deliberately NOT applied on Open: reviewing already-processed output should show ALL
+   of it, not silently hide rows that predate the incident window (e.g. browser history from long
+   before the incident). Processing still carries /from:/to: via launchCli and records it in runinfo. */
+function openTargetInWrapper(cat, target){
   if(/\.html?$/i.test(target.path)){   // report deliverable (e.g. MFTECmd): open the self-contained HTML directly, not via the wrapper (never re-generates)
     try{ new ActiveXObject("WScript.Shell").Run('cmd /c start "" "'+target.path+'"',0,false);
       appendLog("Open report (browser): "+target.path);
@@ -692,12 +734,13 @@ function invOpen(key){
     hta=WPATH[cat.wrapper]||"";
     if(!hta){ setStatus("Downloaded "+cat.wrapper+".hta but could not resolve it - see log.","err"); return; }
   }
-  var cmd='mshta.exe "'+hta+'" "'+target.path+'"';
+  var cmd='mshta.exe "'+hta+'" "'+target.path+'" "'+parentDir(target.path)+'"';
   try{ new ActiveXObject("WScript.Shell").Run(cmd,1,false); }
   catch(e){ setStatus("Could not launch "+cat.wrapper+": "+e.message,"err"); return; }
-  appendLog("Inventory open: "+cmd);
+  appendLog("Open output: "+cmd);
   setStatus(cat.wrapper+" opened with "+baseName(target.path)
-    +(target.others>0?(" - "+target.others+" more file"+(target.others===1?"":"s")+" in the folder"):""),"ok");
+    +(target.others>0?(" - "+target.others+" more file"+(target.others===1?"":"s")+" in the run folder (switch inside the tool)"):"")
+    +(target.legacy?" (legacy pre-finder output)":""),"ok");
 }
 
 /* ================= SCAN ================= */
@@ -896,8 +939,9 @@ function computeStatus(row){
   if(best){
     row.lastOut=best.outDir||"";
     if(outDirHasCsv(best.outDir)){ row.status="proc"; row.statusDate=stampOfOutDir(best.outDir)||String(best.launchedUtc||"").substring(0,16).replace("T"," "); return; }
-    row.status="launch"; row.statusDate=String(best.launchedUtc||"").substring(0,16).replace("T"," ");
-    return;
+    // launched but no output seen at the recorded outDir yet - fall through so runinfo (1b) or the
+    // new-convention folder (2) can still promote it (manual tier-B launches record outDir:"", which
+    // would otherwise pin the row on "launched" forever); "launch" is settled below if neither hits.
   }
   // 1b. wrapper-written runinfo.json binding - exact artifact path, survives manifest loss
   var bestRi=null;
@@ -912,12 +956,16 @@ function computeStatus(row){
   var nd=newOutDir(row);
   if(nd){ var nb=newestUnder(nd);
     if(nb){ row.status="proc"; row.statusDate=nb.mtime; row.lastOut=nd; return; } }
+  if(best){ // launched, nothing produced anywhere yet
+    row.status="launch"; row.statusDate=String(best.launchedUtc||"").substring(0,16).replace("T"," ");
+    return;
+  }
   // 3. old run-folder fallback (pre-0.4 runs): <scanRoot>\_Processed\<host>_<outKey>_* containing a csv
-  var pref=("\\_processed\\"+sanit(row.host)+"_"+row.outKey+"_").toLowerCase();
+  var pref=(PROCSEG+sanit(row.host)+"_"+row.outKey+"_").toLowerCase();
   for(var c=0;c<PROCCSV.length;c++){
     var idx=PROCCSV[c].indexOf(pref);
     if(idx>=0){ row.status="proc";
-      var seg=PROCCSV[c].substring(idx+12); // 12 = length of "\_processed\"
+      var seg=PROCCSV[c].substring(idx+PROCSEG.length);
       row.statusDate=stampOfOutDir(seg.split("\\")[0])||"";
       return; }
   }
@@ -977,6 +1025,9 @@ function statusPill(r){
 }
 var WPATH={};   // wrapper name -> resolved full HTA path ("" if not found); refreshed by renderToolStrip()
 var WVER={};    // wrapper name -> {repo, local, latest, stale} - filled async by checkWrapperUpdates()
+var WRESOLVED=null;   // wrapper name -> resolveWrapper() result, cached for the session (resolution
+                      // full-reads every candidate .hta for its version - too slow to repeat on every
+                      // strip repaint, esp. from a network share); getTool clears an entry on download
 function verCmp(a,b){ a=String(a).split("."); b=String(b).split("."); var n=Math.max(a.length,b.length);
   for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0, y=parseInt(b[i],10)||0; if(x!==y) return x<y?-1:1; } return 0; }
 function htaVersion(path){
@@ -1301,7 +1352,7 @@ function pahNext(){
   window.setTimeout(pahNext, 3000);
 }
 function openFolder(row){
-  var target=(row.cat.gran==="folder"||row.cat.gran==="host")?row.path:row.path;
+  var target=row.path;
   var sh=new ActiveXObject("WScript.Shell");
   try{
     if(row.cat.gran==="file" && fileExists(row.path)) sh.Run('explorer.exe /select,"'+row.path+'"',1,false);
@@ -1330,18 +1381,18 @@ function outDirsNewestFirst(row){
   var nd=newOutDir(row);
   if(nd && !seen[nd.toLowerCase()] && newestUnder(nd)){ seen[nd.toLowerCase()]=1; dirs.push(nd); }
   // manifest lost/foreign runs: reconstruct old-convention run folders from the scan-root CSVs
-  var pref=("\\_processed\\"+sanit(row.host)+"_"+row.outKey+"_").toLowerCase(), fb=[];
+  var pref=(PROCSEG+sanit(row.host)+"_"+row.outKey+"_").toLowerCase(), fb=[];
   for(i=0;i<PROCCSV.length;i++){ var idx=PROCCSV[i].indexOf(pref);
     if(idx<0) continue;
-    var run=PROCCSV[i].substring(idx+12).split("\\")[0];       // 12 = length of "\_processed\"
-    var dir2=PROCCSV[i].substring(0,idx+12)+run;
+    var run=PROCCSV[i].substring(idx+PROCSEG.length).split("\\")[0];
+    var dir2=PROCCSV[i].substring(0,idx+PROCSEG.length)+run;
     if(!seen[dir2]){ seen[dir2]=1; fb.push(dir2); } }
   var all=dirs.concat(fb);                                     // newest run wins, manifest or not
   function rk(d){                                              // recency key: old dirs by name stamp, new dirs by newest file inside
     var m=String(d).match(/_(\d{8}_\d{6})$/); if(m) return m[1].replace("_","");
     var nb=newestUnder(d);
-    if(nb && nb.ms){ var dt=new Date(nb.ms); function p(x){return (x<10?"0":"")+x;}
-      return ""+dt.getFullYear()+p(dt.getMonth()+1)+p(dt.getDate())+p(dt.getHours())+p(dt.getMinutes())+p(dt.getSeconds()); }
+    if(nb && nb.ms){ var dt=new Date(nb.ms);
+      return ""+dt.getFullYear()+pad2(dt.getMonth()+1)+pad2(dt.getDate())+pad2(dt.getHours())+pad2(dt.getMinutes())+pad2(dt.getSeconds()); }
     return "";
   }
   all.sort(function(a,b){ var x=rk(a), y=rk(b); return x<y?1:(x>y?-1:0); });
@@ -1392,34 +1443,7 @@ function openProcessed(row){
     if(lp && fileExists(lp)) target={path:lp, others:0, legacy:true};
   }
   if(!target){ setStatus("No processed output found for this artifact - rescan first, or [Re-process] it.","err"); return; }
-  if(/\.html?$/i.test(target.path)){   // report deliverable (e.g. MFTECmd): open the self-contained HTML directly, not via the wrapper (never re-generates)
-    try{ new ActiveXObject("WScript.Shell").Run('cmd /c start "" "'+target.path+'"',0,false);
-      appendLog("Open report (browser): "+target.path);
-      setStatus("Opened report "+baseName(target.path)+" in your browser"+(target.others>0?(" - "+target.others+" CSV(s) in the run folder"):""),"ok"); }
-    catch(eH){ setStatus("Could not open the report: "+eH.message,"err"); }
-    return;
-  }
-  ensureFreshWrapper(cat);              // stale? offer to update before opening the output in it (prompted)
-  var hta=WPATH[cat.wrapper]||"";
-  if(!hta){
-    setStatus(cat.wrapper+".hta not found - downloading it first…","muted");
-    if(!getTool(cat,true)) return;                             // getTool sets its own error status
-    hta=WPATH[cat.wrapper]||"";
-    if(!hta){ setStatus("Downloaded "+cat.wrapper+".hta but could not resolve it - see log.","err"); return; }
-  }
-  // pass the output folder (so the wrapper derives the collected host from the _Processed\<host>\ path,
-  // not this machine's name). The case window is deliberately NOT applied on Open: reviewing already-
-  // processed output should show ALL of it, not silently hide rows that predate the incident window
-  // (e.g. browser history from long before the incident). Processing still carries /from:/to: via
-  // launchCli and records it in runinfo.
-  var openOutDir=parentDir(target.path);
-  var cmd='mshta.exe "'+hta+'" "'+target.path+'" "'+openOutDir+'"';
-  try{ new ActiveXObject("WScript.Shell").Run(cmd,1,false); }
-  catch(e){ setStatus("Could not launch "+cat.wrapper+": "+e.message,"err"); return; }
-  appendLog("Open output: "+cmd);
-  setStatus(cat.wrapper+" opened with "+baseName(target.path)
-    +(target.others>0?(" - "+target.others+" more file"+(target.others===1?"":"s")+" in the run folder (switch inside the tool)"):"")
-    +(target.legacy?" (legacy pre-finder output)":""),"ok");
+  openTargetInWrapper(cat, target);
 }
 function getTool(cat,auto){
   if(!cat.repo){ setStatus("No download source for "+cat.name,"err"); return false; }
@@ -1427,25 +1451,11 @@ function getTool(cat,auto){
   var fn=cat.wrapper+".hta";
   if(!auto && !confirm("Download "+fn+" from github.com/bpmorris22/"+cat.repo+"\ninto\n"+TOOLDIR+" ?")) return false;
   setStatus("Downloading "+cat.wrapper+"…","muted");
-  var fso=new ActiveXObject("Scripting.FileSystemObject");
-  var ps1=fso.GetSpecialFolder(2)+"\\af_get_"+uid()+".ps1";
-  var dq=String(dest).replace(/'/g,"''");
-  var L=[];
-  L.push("$ErrorActionPreference='Stop'");
-  L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
   // repos are split across default branches (PECmd/AmcacheParser=master, the rest=main) - try both
-  L.push("$ok=$false");
-  L.push("foreach($u in @('"+GH_RAW+cat.repo+"/main/"+fn+"','"+GH_RAW+cat.repo+"/master/"+fn+"')){");
-  L.push("  try{ Invoke-WebRequest -UseBasicParsing -Uri $u -OutFile '"+dq+"' -Headers @{ 'User-Agent'='DFIR-Artifact-Finder' }");
-  L.push("       Write-Output ('GET_OK '+$u); $ok=$true; break }");
-  L.push("  catch{ Write-Output ('miss: '+$u+' -> '+$_.Exception.Message) }");
-  L.push("}");
-  L.push("if(-not $ok){ throw 'download failed on both branches' }");
-  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Could not stage download script: "+ew.message,"err"); return false; }
-  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1'], true);
-  try{ fso.DeleteFile(ps1); }catch(e0){}
+  var r=psDownload([GH_RAW+cat.repo+"/main/"+fn, GH_RAW+cat.repo+"/master/"+fn], dest, true);
   appendLog("--- download "+cat.wrapper+" ---\n"+r.log);
-  if((r.log+"").indexOf("GET_OK")>=0 && fileExists(dest)){
+  if(r.ok && fileExists(dest)){
+    if(WRESOLVED) delete WRESOLVED[cat.wrapper];   // re-resolve: the fresh toolkit copy may now be the newest candidate
     setStatus(cat.wrapper+".hta installed"+(auto?".":" - click Process again."),"ok"); renderToolStrip(); render();
     return true;
   } else {
@@ -1455,9 +1465,10 @@ function getTool(cat,auto){
 }
 function renderToolStrip(){
   var seen={}, h="";
+  if(!WRESOLVED) WRESOLVED={};
   for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i];
     if(!c.wrapper || seen[c.wrapper]) continue; seen[c.wrapper]=1;
-    var p=resolveWrapper(c);
+    var p=(c.wrapper in WRESOLVED)?WRESOLVED[c.wrapper]:(WRESOLVED[c.wrapper]=resolveWrapper(c));
     WPATH[c.wrapper]=p;
     var local=p && parentDir(p).toLowerCase()===TOOLDIR.toLowerCase();
     var wv=WVER[c.wrapper], stale=!!(p && wv && wv.stale);   // GitHub release newer than the copy we'd launch
@@ -1580,8 +1591,7 @@ function iocCount(){
   return -1;
 }
 
-/* both chip actions route here (create/edit) - Notepad is no longer the primary path */
-function iocEdit(mode){ openIocEditor(); }
+/* both chip actions (create/edit) route here - Notepad is no longer the primary path */
 function openIocEditor(){
   IOC_ROWS=iocLoadCsv();
   var imp=iocImportLegacy(IOC_ROWS);
@@ -1800,7 +1810,7 @@ function init(){
     var uk=t.getAttribute("data-upd");
     if(uk){ updateWrapper(CATBYKEY[uk]); return; }
     var im=t.getAttribute("data-ioc");
-    if(im){ iocEdit(im); return; }
+    if(im){ openIocEditor(); return; }
     if(t.getAttribute("data-iocadd")){ iocAddRow(); return; }
     var idel=t.getAttribute("data-iocdel");
     if(idel!=null && idel!==""){ iocDelRow(parseInt(idel,10)); return; }
@@ -1878,19 +1888,8 @@ function openInstructions(){
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   var dest=fso.GetSpecialFolder(2)+"\\"+MANUAL_FILE;   // %TEMP% - overwritten each click with the latest
   setStatus("Downloading the field guide from GitHub (~5 MB)…","muted");
-  var ps1=fso.GetSpecialFolder(2)+"\\af_man_"+uid()+".ps1";
-  var dq=String(dest).replace(/'/g,"''");
-  var L=[];
-  L.push("$ErrorActionPreference='Stop'");
-  L.push("[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12");
-  L.push("Invoke-WebRequest -UseBasicParsing -Uri '"+MANUAL_URL+"' -OutFile '"+dq+"' -Headers @{ 'User-Agent'='DFIR-Artifact-Finder' }");
-  L.push("if((Get-Item '"+dq+"').Length -lt 2000){ throw 'downloaded file too small' }");
-  L.push("Write-Output 'MAN_OK'");
-  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }
-  catch(ew){ setStatus("Could not stage the field-guide download: "+ew.message,"err"); return; }
-  var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
-  try{ fso.DeleteFile(ps1); }catch(e0){}
-  if((r.log+"").indexOf("MAN_OK")>=0 && fileExists(dest)){
+  var r=psDownload([MANUAL_URL], dest);
+  if(r.ok && fileExists(dest)){
     if(openManualFile(dest)) setStatus("Field guide downloaded and opened in your browser.","ok");
     appendLog("Field guide: downloaded latest -> "+dest);
   } else {
@@ -1905,28 +1904,44 @@ function openInstructions(){
 
 /* ---------- self-update: quiet check of this app's GitHub Releases; one-click download of a newer .hta ---------- */
 var SELF_REPO="bpmorris22/DFIR-Windows-Artifact-Finder", SELF_HTA="DFIR-Artifact-Finder.hta", SELF_LATEST="", SELF_ASSET_URL="";
-function selfVerNewer(r,l){ var a=String(r).split("."),b=String(l).split("."),n=Math.max(a.length,b.length);
-  for(var i=0;i<n;i++){ var x=parseInt(a[i],10)||0,y=parseInt(b[i],10)||0; if(x!==y) return x>y; } return false; }
 function selfPath(){ try{ var p=decodeURIComponent(location.pathname+"").replace(/^\//,"").replace(/\//g,"\\");
   if(/\.hta$/i.test(p) && fileExists(p)) return p; }catch(e){} return (htaFolder()||"")+"\\"+SELF_HTA; }
-function checkSelfUpdate(){
+/* ---------- shared GitHub latest-release check with a settings-backed cache ----------
+   The self check + 12 wrapper checks = ~13 unauthenticated api.github.com calls per launch;
+   the anonymous limit is 60/hour/IP, so a busy triage session would silently rate-limit every
+   later check. Successful results are cached in the settings sidecar for GH_CHECK_TTL, making
+   repeat launches free (and giving stale-detection an offline fallback). cb(latest, bodyOrNull) -
+   body is null on a cache hit (only checkSelfUpdate wants it, and it has a URL fallback). */
+var GH_CHECK_TTL=6*3600*1000;
+function ghLatestRelease(repo, cb){
+  var c=SETTINGS.ghCache && SETTINGS.ghCache[repo];
+  if(c && c.ts && (new Date().getTime()-c.ts)<GH_CHECK_TTL && c.latest){ try{ cb(c.latest,null); }catch(e0){} return; }
   try{
     var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
-    x.open("GET","https://api.github.com/repos/"+SELF_REPO+"/releases/latest",true);
-    try{ x.setRequestHeader("User-Agent",SELF_HTA); }catch(eh){}
+    x.open("GET","https://api.github.com/repos/"+repo+"/releases/latest",true);
+    try{ x.setRequestHeader("User-Agent","DFIR-Artifact-Finder"); }catch(eh){}
     x.onreadystatechange=function(){ if(x.readyState!==4) return;
       try{ if(x.status!==200) return; var t=x.responseText+"";
         var m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
-        var latest=m[1]; if(!selfVerNewer(latest,APP_VERSION)) return;
-        var url="", re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm;
-        while((mm=re.exec(t))){ if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0){ url=mm[1]; break; } if(!url) url=mm[1]; }
-        if(!url) url="https://github.com/"+SELF_REPO+"/releases/download/v"+latest+"/"+SELF_HTA;
-        SELF_LATEST=latest; SELF_ASSET_URL=url;
-        var b=$("selfUpd"); if(b){ b.innerHTML="Update to v"+latest; b.className="btn primary";
-          b.title="A newer "+SELF_HTA+" (v"+latest+") is on GitHub - click to download & replace this file"; }
+        if(!SETTINGS.ghCache) SETTINGS.ghCache={};
+        SETTINGS.ghCache[repo]={ts:new Date().getTime(), latest:m[1]};
+        try{ saveSettings(); }catch(es){}
+        cb(m[1], t);
       }catch(e){} };
     x.send();
   }catch(e){}
+}
+function checkSelfUpdate(){
+  ghLatestRelease(SELF_REPO, function(latest, body){
+    if(verCmp(latest,APP_VERSION)<=0) return;
+    var url="";
+    if(body){ var re=/"browser_download_url"\s*:\s*"([^"]+\.hta)"/ig, mm;
+      while((mm=re.exec(body))){ if(mm[1].toLowerCase().indexOf(SELF_HTA.toLowerCase())>=0){ url=mm[1]; break; } if(!url) url=mm[1]; } }
+    if(!url) url="https://github.com/"+SELF_REPO+"/releases/download/v"+latest+"/"+SELF_HTA;
+    SELF_LATEST=latest; SELF_ASSET_URL=url;
+    var b=$("selfUpd"); if(b){ b.innerHTML="Update to v"+latest; b.className="btn primary";
+      b.title="A newer "+SELF_HTA+" (v"+latest+") is on GitHub - click to download & replace this file"; }
+  });
 }
 function doSelfUpdate(){
   if(!SELF_ASSET_URL){ setStatus("No update available (or offline).","muted"); return; }
@@ -1934,22 +1949,11 @@ function doSelfUpdate(){
   if(!target || !/\.hta$/i.test(target)){ setStatus("Can't locate this app's own file to update in place.","err"); return; }
   if(!confirm("Download "+SELF_HTA+" v"+SELF_LATEST+" and replace this file?\n\n"+target+"\n\nAfter it downloads, close and reopen the app to run the new version.")) return;
   setStatus("Downloading v"+SELF_LATEST+"…","muted");
-  var fso=new ActiveXObject("Scripting.FileSystemObject"), tmp=fso.GetSpecialFolder(2)+"";
-  var ps1=tmp+"\\selfupd_"+new Date().getTime()+Math.floor(Math.random()*100000)+".ps1";
-  var tq=String(target).replace(/'/g,"''"), uq=String(SELF_ASSET_URL).replace(/'/g,"''");
-  var L=["$ErrorActionPreference='Stop'","[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
-    "$u='"+uq+"'","$t='"+tq+"'","$tmp=Join-Path $env:TEMP ('selfupd_'+[guid]::NewGuid().ToString('N')+'.hta')",
-    "Invoke-WebRequest -Uri $u -OutFile $tmp -Headers @{ 'User-Agent'='"+SELF_HTA+"' }",
-    "if((Get-Item $tmp).Length -lt 2000){ throw 'downloaded file too small' }",
-    "Copy-Item $tmp $t -Force","Remove-Item $tmp -Force -ErrorAction SilentlyContinue","Write-Output 'SELFUPD_OK'"];
-  try{ var f=fso.CreateTextFile(ps1,true); f.Write(L.join("\r\n")); f.Close(); }catch(ew){ setStatus("Self-update stage failed: "+ew.message,"err"); return; }
-  try{ var r=runBat(['powershell -NoProfile -ExecutionPolicy Bypass -File "'+ps1+'" > "__LOG__" 2>&1']);
-    try{ fso.DeleteFile(ps1); }catch(e0){}
-    if((r.log+"").indexOf("SELFUPD_OK")>=0){ var b=$("selfUpd"); if(b) b.className="btn primary hide";
-      setStatus("Updated to v"+SELF_LATEST+" - CLOSE and reopen the app to run the new version.","ok");
-      try{ alert("Update installed (v"+SELF_LATEST+").\n\nClose and reopen "+SELF_HTA+" to run the new version."); }catch(e){}
-    } else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log; download manually from GitHub if needed.","err"); }
-  }catch(e){ setStatus("Self-update failed: "+e.message,"err"); }
+  var r=psDownload([SELF_ASSET_URL], target);
+  if(r.ok){ var b=$("selfUpd"); if(b) b.className="btn primary hide";
+    setStatus("Updated to v"+SELF_LATEST+" - CLOSE and reopen the app to run the new version.","ok");
+    try{ alert("Update installed (v"+SELF_LATEST+").\n\nClose and reopen "+SELF_HTA+" to run the new version."); }catch(e){}
+  } else { appendLog("--- self-update ---\n"+r.log); setStatus("Self-update failed - see log; download manually from GitHub if needed.","err"); }
 }
 /* ---------- wrapper self-update: quiet per-wrapper GitHub Releases check + one-click update ----------
    Mirrors checkSelfUpdate, but for every wrapper HTA present next to this app (or resolved from a sibling
@@ -1966,20 +1970,11 @@ function checkWrapperUpdates(){
   }
 }
 function checkOneWrapper(cat, localVer){
-  try{
-    var x=new ActiveXObject("MSXML2.XMLHTTP.6.0");
-    x.open("GET","https://api.github.com/repos/bpmorris22/"+cat.repo+"/releases/latest",true);
-    try{ x.setRequestHeader("User-Agent","DFIR-Artifact-Finder"); }catch(eh){}
-    x.onreadystatechange=function(){ if(x.readyState!==4) return;
-      try{ if(x.status!==200) return; var t=x.responseText+"";
-        var m=t.match(/"tag_name"\s*:\s*"v?([0-9.]+)"/i); if(!m) return;
-        var latest=m[1], stale=(verCmp(localVer,latest)<0);
-        WVER[cat.wrapper]={repo:cat.repo, local:localVer, latest:latest, stale:stale};
-        if(stale){ renderToolStrip(); if(SCANROOT) render(); }   // repaint only when there's an amber tile to show
-      }catch(e){}
-    };
-    x.send();
-  }catch(e){}
+  ghLatestRelease("bpmorris22/"+cat.repo, function(latest){
+    var stale=(verCmp(localVer,latest)<0);
+    WVER[cat.wrapper]={repo:cat.repo, local:localVer, latest:latest, stale:stale};
+    if(stale){ renderToolStrip(); if(SCANROOT) render(); }   // repaint only when there's an amber tile to show
+  });
 }
 function updateWrapper(cat){
   if(!cat || !cat.wrapper) return false;
