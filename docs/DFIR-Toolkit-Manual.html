@@ -257,7 +257,8 @@
   <p class="answers"><b>Run this first on every host.</b> Sigma-rule detection over the event logs is the fastest route to the incident's story — what fired, on which computer, when. Everything else in the toolkit corroborates and extends what the logs say.</p>
   <h4>What it does</h4>
   <ul>
-    <li>Runs <code>hayabusa csv-timeline</code> for you — file or recursive directory mode, <b>Sigma rules auto-updated first</b> by default, forced <code>--no-wizard</code> / <code>--ISO-8601</code> (UTC) / <code>-C</code>. Min-level defaults to informational = see everything.</li>
+    <li>Runs <code>hayabusa dfir-timeline</code> for you — file or recursive directory mode, <b>Sigma rules auto-updated first</b> by default, forced <code>--no-wizard</code> / <code>--iso-8601</code> (UTC) / <code>-C</code>. Min-level defaults to informational = see everything.</li>
+    <li>Works with <b>Hayabusa 4.x and 3.x</b> (v0.12.0): 4.x renamed <code>csv-timeline</code> → <code>dfir-timeline</code> and <code>--ISO-8601</code> → <code>--iso-8601</code>; the wrapper picks the right spelling from the detected Hayabusa version, so either install just works.</li>
     <li><b>Four synchronized views</b>: <b>Chronological</b> (newest first), <b>By severity</b> (collapsible Critical → Info groups, Crit/High expanded), <b>By rule title</b> (one row per rule with count, distinct computers, first/last seen — the scalable lens on six-figure timelines), and <b>By ATT&amp;CK tactic</b> (v0.8.0) — detections aggregated by MITRE ATT&amp;CK tactic, ranked by max severity; a single detection can map to several tactics, and clicking a tactic (or rule) drills into its detections. This view appears when the run used the <b>verbose</b> profile, which adds the <code>MitreTactics</code> column.</li>
     <li>Severity-aware color coding; per-level counts; computer filter; UTC date range; free-text search.</li>
     <li><b>IOC list</b> (+3, red) matched across title, details, extra fields, computer, channel, rule id — plus a separate <b>noise / known-FP list</b> to suppress environment-specific false positives without baking them into the tool.</li>
@@ -626,7 +627,7 @@
 <footer>
   <p><b>Credits.</b> The wrappers are unaffiliated front-ends around <a href="https://ericzimmerman.github.io/">Eric Zimmerman's EZ Tools</a> (PECmd, AmcacheParser, SrumECmd, MFTECmd, LECmd, JLECmd, RECmd, RBCmd, SumECmd, SQLECmd) and <a href="https://github.com/Yamato-Security/hayabusa">Yamato Security's Hayabusa</a> — all parsing and detection credit belongs to those projects. All tools in this manual are MIT-licensed; engines are downloaded from their official distributions and remain subject to their own licenses.</p>
   <p><b>Data hygiene.</b> Every screenshot in this manual was produced from fabricated, synthetic data (fake hosts ACME-WS01 / ACME-SRV02 / DEMO-WKSTN, fake user jdoe). No case data is included. The tools themselves run fully locally; their only network activity is optional engine download / self-update from official sources.</p>
-  <p>Manual updated 2026-07-08 (Hayabusa v0.8.0: MITRE ATT&amp;CK tactic view, HTML report, EID metrics, Timeline Explorer hand-off) · Ben Morris · <a href="https://github.com/bpmorris22">github.com/bpmorris22</a></p>
+  <p>Manual updated 2026-10-01 (Hayabusa Wrapper v0.12.0: Hayabusa 4.x <code>dfir-timeline</code> support) · Ben Morris · <a href="https://github.com/bpmorris22">github.com/bpmorris22</a></p>
 </footer>
 
 </div>
