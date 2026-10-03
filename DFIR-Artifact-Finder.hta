@@ -20,8 +20,10 @@
 <!--
   DFIR-Windows-Artifact-Finder - master triage launcher for the wrapper family
   (Hayabusa / PECmd / AmcacheParser / MFTECmd / SrumECmd / SumECmd / RBCmd / SQLECmd / LECmd / JLECmd / RECmd
-  wrappers + Login Activity Triage, github.com/bpmorris22/*). EVTX folders feed two tools: Hayabusa (Sigma
-  detections) and LoginActivityTriage.hta (logons / RDP / lateral movement over LoginActivityTriageCli.exe).
+  wrappers + Login Activity Triage + Services-Analyzer + SchedTasks-Analyzer, github.com/bpmorris22/*). EVTX folders feed two tools:
+  Hayabusa (Sigma detections) and LoginActivityTriage.hta (logons / RDP / lateral movement over
+  LoginActivityTriageCli.exe). A host's SYSTEM hive feeds RECmd-Wrapper AND Services-Analyzer (every service,
+  joined to its 7045 / 4697 install history from the same host's System / Security logs).
 
   Scans a case folder (Velociraptor / KAPE collection trees) with `dir /s /b` (FSO recursion dies on the
   long paths these trees produce), classifies every file against the artifact catalog, and presents a
@@ -252,7 +254,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.17.0";
+var APP_VERSION = "0.18.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -302,10 +304,14 @@ var DRAG = null;                      // active column-drag state
    gran: "folder" (group matches by parent dir) | "file" (one row per file) | "host" (one aggregate row per host+collection)
    also:"<key>" = no classifier rule of its own - every file matching <key> ALSO feeds this entry, so one
                   EVTX folder yields a Hayabusa row AND a Login Activity row (same path, own status/output)
+   alsoRe:/re/  = gate for also: - only files whose lowercased path matches feed this entry (Services: the
+                  "reg" classifier also matches SOFTWARE / SAM / NTUSER..., but only a SYSTEM hive makes a row)
    rel:true     = download from the repo's latest GitHub Release assets first (raw main/master is the fallback)
    sub:"dir/"   = the .hta lives in that subfolder of its repo (raw fallback + sibling dev-folder lookup)
    extras:[...] = companion release assets the tool needs beside its .hta (an engine exe) - fetched with the
                   .hta, and again before a launch if missing next to the copy being launched
+   app:"Name"   = the tool's own output-folder name (_Processed\<host>\<app>) when it is not the wrapper name
+                  minus "-Wrapper" (SchedTasks-Analyzer writes to ...\SchedTasks)
 */
 var CATALOG = [
   {key:"evtx",    name:"Event logs",    outKey:"EventLogs", gran:"folder", wrapper:"Hayabusa-Wrapper",      repo:"Hayabusa-Wrapper",      cli:true,
@@ -335,6 +341,11 @@ var CATALOG = [
    desc:"USN journal ($J) - parsed with MFTECmd via MFTECmd-Wrapper; auto-pairs the volume $MFT when present, else journal-only"},
   {key:"reg",     name:"Registry hives",outKey:"Registry",  gran:"host",   wrapper:"RECmd-Wrapper", repo:"RECmd-Wrapper", cli:true,
    desc:"SYSTEM / SOFTWARE / SAM / SECURITY / NTUSER / UsrClass - persistence triage via RECmd batch (Kroll)"},
+  {key:"svc",     name:"Services",      outKey:"Services",  gran:"host",   wrapper:"Services-Analyzer",     repo:"Services-Analyzer",     cli:true,
+   also:"reg", alsoRe:/\\config\\system$/,
+   desc:"SYSTEM hive + System / Security logs - every service scored for persistence / remote-exec tradecraft, joined to its 7045 / 4697 install history (incl. transient services no longer in the hive) via Services-Analyzer"},
+  {key:"tasks",   name:"Scheduled tasks",outKey:"SchedTasks",gran:"host",  wrapper:"SchedTasks-Analyzer",   repo:"SchedTasks-Analyzer",   cli:true, app:"SchedTasks",
+   desc:"Windows\\System32\\Tasks XML + the SOFTWARE hive's TaskCache - persistence / lateral-movement triage (registry-only, hidden, Tree-only residue, deleted tasks) via SchedTasks-Analyzer"},
   {key:"sum",     name:"SUM database",  outKey:"SUM",       gran:"file",   wrapper:"SumECmd-Wrapper",       repo:"SumECmd-Wrapper",       cli:true,
    desc:"User Access Logging (Current.mdb) - server access by user / IP / role via SumECmd"},
   {key:"webc",    name:"WebCache",      outKey:"WebCache",  gran:"file",   wrapper:"", repo:"", cli:false, hidden:true,
@@ -610,7 +621,7 @@ function appendManifest(entry){
    the tools' own datetime-stamped CSV names keep runs apart. Effective host per row:
    multi-host scan → the row's detected host (field covers "(root)" rows); otherwise the field
    wins so the operator can overwrite a bad guess. Empty → [Process] refuses. */
-function appFor(cat){ return String(cat.wrapper||"").replace(/-Wrapper$/i,""); }
+function appFor(cat){ return cat.app || String(cat.wrapper||"").replace(/-Wrapper$/i,""); }
 function outDirIsApp(od, cat){ var b=String(od||"").replace(/[\\\/]+$/,"").split(/[\\\/]/).pop();
   return b.toLowerCase()===appFor(cat).toLowerCase(); }   /* host-gran artifacts share row.path; the output folder name disambiguates the wrapper */
 function realHosts(){ var h=distinctHosts(), out=[]; for(var i=0;i<h.length;i++){ if(h[i] && h[i]!=="(root)") out.push(h[i]); } return out; }
@@ -963,6 +974,9 @@ function classify(lstPath){
     var key="", gran="";
     // path-scoped first (so extension rules don't steal recycle-bin contents)
     if(low.indexOf("\\$recycle.bin\\")>=0){ key="rbin"; }
+    // Task Scheduler store (task XML is extensionless; legacy Windows\Tasks holds .job files) - path-scoped like the bin
+    else if(low.indexOf("\\windows\\system32\\tasks\\")>=0 || low.indexOf("\\windows\\syswow64\\tasks\\")>=0 ||
+            (low.indexOf("\\windows\\tasks\\")>=0 && /\.job$/.test(base))){ key="tasks"; }
     else if(base==="amcache.hve"){ key="amcache"; }
     else if(base==="srudb.dat"){ key="srum"; }
     else if(base==="$mft"){ key="mft"; }
@@ -983,6 +997,7 @@ function classify(lstPath){
     for(var ki=0;ki<keys.length;ki++){
       var cat=CATBYKEY[keys[ki]];
       if(cat.hidden) continue;                 // parked artifact types - never become rows
+      if(cat.also===key && cat.alsoRe && !cat.alsoRe.test(low)) continue;   // gated also: (Services: only a SYSTEM hive feeds it)
       fed++;
       gran=cat.gran;
       var gpath, gkey;
@@ -1580,6 +1595,9 @@ function pickOpenTarget(row,dir){
   if(row.key==="logon"){                                       // Login Activity Triage: any results CSV loads the whole folder - open on the findings
     var lf=[]; for(i=0;i<csv.length;i++){ if(/^findings\.csv$/i.test(csv[i].name)) lf.push(csv[i]); }
     if(lf.length) pick=newest(lf); }
+  if(row.key==="svc"){                                         // Services-Analyzer: any CSV of a run reloads the whole run (runinfo.json) - open on the batch CSV, not an export
+    var sv=[]; for(i=0;i<csv.length;i++){ if(/_RECmd_Batch_ServicesAnalyzer_Output\.csv$/i.test(csv[i].name)) sv.push(csv[i]); }
+    if(sv.length) pick=newest(sv); }
   if(row.key==="srum"){                                        // SRUM: the exfil table is the headline
     var su=[]; for(i=0;i<csv.length;i++){ if(/networkusage/i.test(csv[i].name)) su.push(csv[i]); }
     if(su.length) pick=newest(su); }
@@ -2225,6 +2243,8 @@ window.onload=function(){ init();
       <li><b>Process all (N)</b> on a host's header row queues every unprocessed tool-ready artifact of that host with <code>/auto</code> - one launch every 3 seconds, each in its own wrapper window. Come back and rescan when the consoles are done.</li>
       <li><b>[Open]</b> on a processed row hands the newest output straight back to the wrapper - no reprocessing.</li>
       <li>Every event-log folder gets <b>two rows</b>: <b>Event logs</b> &rarr; Hayabusa-Wrapper (Sigma detection timeline) and <b>Logon activity</b> &rarr; <b>Login Activity Triage</b> (who logged on, from where, how - RDP, PsExec, WinRM, WMI, remote tasks, RMM tools - with stitched remote sessions and MITRE-mapped findings). Each has its own status, output folder and [Process]/[Open].</li>
+      <li>A host with a <code>config\SYSTEM</code> hive also gets a <b>Services</b> row &rarr; <b>Services-Analyzer</b>: every configured service and driver joined to its 7045 / 4697 install history from the same host's System / Security logs, so transient services that were installed and removed (PsExec, smbexec) surface beside the configured ones. It sits next to the <b>Registry hives</b> row (RECmd-Wrapper) on the same host folder; the analyzer finds the hive and the logs itself.</li>
+      <li>A host with a <code>Windows\System32\Tasks</code> folder gets a <b>Scheduled tasks</b> row &rarr; <b>SchedTasks-Analyzer</b>: every task file scored for persistence / lateral-movement tradecraft and cross-checked against the SOFTWARE hive's TaskCache (registry-only, hidden, Tree-only residue and deleted tasks). It writes to <code>_Processed\&lt;host&gt;\SchedTasks\</code> and uses RECmd, which it finds next to this app or downloads.</li>
       <li>Login Activity Triage is an HTA over <code>LoginActivityTriageCli.exe</code> (needs the .NET 8+ runtime). <b>Get tool</b> downloads the <code>.hta</code> and the engine together from its latest GitHub release; if the engine is missing next to the copy being launched, <b>[Process]</b> fetches it first.</li>
     </ul>
     <h3>Where outputs go</h3>
