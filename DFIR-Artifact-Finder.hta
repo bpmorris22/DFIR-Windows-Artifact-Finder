@@ -197,7 +197,8 @@
     <div class="scroll" style="max-height:280px"><table id="invTbl"></table></div>
     <div class="muted" style="font-size:11px;margin-top:6px">
       Everything under <span class="mono">_Processed</span> next to this app - newest output date (file count) per host per tool,
-      across all cases. Click a cell to open the newest output in its wrapper; <span class="mono">dir</span> opens the folder.
+      across all cases. Click a <b>host</b> to open its artifact board (scans its evidence folder, as if you had pressed Scan).
+      Click a cell to open the newest output in its wrapper; <span class="mono">dir</span> opens the folder.
       The <span class="sumbad">&#9873; red</span> / <span class="sumok">green</span> line is the tool's own triage headline
       (flagged / max score, or crit/high for Hayabusa and Login Activity Triage) from the newest run - hover for the top hits.
     </div>
@@ -251,7 +252,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.16.0";
+var APP_VERSION = "0.17.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -738,7 +739,7 @@ function renderInventory(){
       tds+='<td>'+(cell
         ?('<span class="lnk" data-invopen="'+ref+'" title="Open the newest output in '+esc(ic?ic.wrapper:mdl.used[i])+'">'+esc(cell.mtime||"?")+' ('+cell.n+')</span> <span class="lnk muted" data-invdir="'+ref+'" title="Open this folder in Explorer">dir</span>'+sumBadge(s))
         :'<span class="muted">-</span>')+'</td>'; }
-    rows+='<tr><td><b>'+esc(mdl.hostDisp[hl2])+'</b>'+(hostHot>0?(' <span class="sumbad" title="Flagged / critical+high findings across this host\'s processed tools">&#9873; '+hostHot+'</span>'):'')+'</td>'+tds+'</tr>';
+    rows+='<tr><td><span class="lnk" style="font-weight:600" data-invhost="'+esc(mdl.hostDisp[hl2])+'" title="Open this host\'s artifact board - scans its evidence folder (recovered from its processed runs), as if you had pressed Scan">'+esc(mdl.hostDisp[hl2])+'</span>'+(hostHot>0?(' <span class="sumbad" title="Flagged / critical+high findings across this host\'s processed tools">&#9873; '+hostHot+'</span>'):'')+'</td>'+tds+'</tr>';
   }
   $("invTbl").innerHTML=rows;
   $("invSub").innerHTML="- "+nf(mdl.hlist.length)+" host"+(mdl.hlist.length===1?"":"s")+" &middot; "+esc(TOOLDIR+"\\_Processed");
@@ -762,6 +763,81 @@ function copyTriage(){
   }
   try{ window.clipboardData.setData("Text", out.join("\r\n")); setStatus("Copied triage summary for "+mdl.hlist.length+" host(s) to clipboard","ok"); }
   catch(e){ setStatus("Copy failed: "+e.message,"err"); }
+}
+/* ---------- host → artifact board (v0.17) ----------
+   Clicking a host in the processed inventory scans that host's evidence folder and opens the board
+   on it - the same result as typing the folder and pressing Scan. The folder is recovered from the
+   host's own processed runs (runinfo.json inputs under _Processed\<host>\, manifest artifact paths),
+   newest run first:
+     1. the Velociraptor Collection-<host>-<ts> folder the artifact sits in (setRootAttrib takes the
+        host from its name, so scanning it alone attributes every row correctly);
+     2. the scan root recorded with the launch (manifest scanRoot, v0.17+);
+     3. KAPE-style <case>\<HOST>\... - scan the CASE folder and filter to the host (scanning the host
+        folder itself would attribute rows to its first subfolder, e.g. "C");
+     4. the last scanned folder, if the artifact lives under it. */
+var PENDING_HOST="";   // inventory host to focus once the scan it triggered has classified
+function underDir(p, d){ if(!p||!d) return false;
+  var dl=String(d).replace(/[\\\/]+$/,"").toLowerCase()+"\\"; return String(p).toLowerCase().substring(0,dl.length)===dl; }
+function evidenceRoot(p, hl, scanRoot){
+  var segs=String(p).replace(/[\\\/]+$/,"").split("\\"), i;
+  function join(n){ var r=segs.slice(0,n).join("\\"); return /^[A-Za-z]:$/.test(r)?(r+"\\"):r; }
+  for(i=0;i<segs.length;i++){ if(/^Collection-.+?-\d{4}-\d{2}-\d{2}T/i.test(segs[i])) return join(i+1); }
+  if(scanRoot && underDir(p,scanRoot)) return scanRoot;
+  for(i=1;i<segs.length-1;i++){ if(segs[i] && sanit(segs[i]).toLowerCase()===hl) return join(i); }
+  var lr=SETTINGS.lastRoot||""; if(lr && underDir(p,lr)) return lr;
+  return "";
+}
+function hostEvidenceRoots(hostDisp){
+  var hl=String(hostDisp).toLowerCase(), hdir=TOOLDIR+"\\_Processed\\"+hostDisp, ents=[], i;
+  for(i=0;i<RUNINFO.length;i++){ var e=RUNINFO[i];
+    if(e && e.input && underDir(e.outDir,hdir)) ents.push({p:String(e.input), t:String(e.finishedUtc||""), sr:""}); }
+  for(i=0;i<MANIFEST.length;i++){ var m=MANIFEST[i];
+    if(m && m.artifactPath && sanit(m.hostUsed||m.host||"").toLowerCase()===hl)
+      ents.push({p:String(m.artifactPath), t:String(m.launchedUtc||""), sr:String(m.scanRoot||"")}); }
+  ents.sort(function(a,b){ return a.t<b.t?1:(a.t>b.t?-1:0); });
+  var out=[], seen={};
+  for(i=0;i<ents.length;i++){ var r=evidenceRoot(ents[i].p, hl, ents[i].sr);
+    if(!r || seen[r.toLowerCase()]) continue; seen[r.toLowerCase()]=1; out.push(r); }
+  return out;
+}
+function openHostBoard(hostDisp){
+  if(BUSY){ setStatus("A scan is already running - let it finish, then click the host again.","err"); return; }
+  loadManifest();                                    // not loaded before the first scan
+  var roots=hostEvidenceRoots(hostDisp), root="", i;
+  for(i=0;i<roots.length;i++){ if(folderExists(roots[i])){ root=roots[i]; break; }
+    appendLog("Host "+hostDisp+": evidence folder not reachable: "+roots[i]); }
+  if(!root){
+    setStatus(roots.length
+      ? "Evidence folder for "+hostDisp+" is not reachable (moved, unmounted, or on another machine): "+roots[0]
+      : "No evidence folder on record for "+hostDisp+" - its runs carry no source path. Pick the folder above and Scan.","err");
+    return; }
+  if(roots.length>1) appendLog("Host "+hostDisp+": "+roots.length+" evidence folders on record - opening the newest reachable one: "+root);
+  $("rootPath").value=root;
+  PENDING_HOST=hostDisp;
+  appendLog("Host "+hostDisp+": scanning its evidence folder "+root);
+  startScan();
+  if(!BUSY) PENDING_HOST="";                         // startScan refused (it reported why)
+}
+/* the clicked host names its own _Processed folder - put it in the Target-hostname field (not marked
+   as typed, so the next ordinary scan's guess replaces it), so re-processing lands beside the existing
+   output even when that output was written under an overridden hostname */
+function pendingHostField(){
+  if(!PENDING_HOST) return;
+  var hs=realHosts(), hl=PENDING_HOST.toLowerCase(), any=false;
+  for(var i=0;i<hs.length;i++){ if(sanit(hs[i]).toLowerCase()===hl) any=true; }
+  if(any || hs.length<=1) $("hostName").value=PENDING_HOST;
+}
+function focusHost(){
+  var hostDisp=PENDING_HOST; PENDING_HOST="";
+  if(!hostDisp) return;
+  var hl=hostDisp.toLowerCase(), hs=distinctHosts(), match="", n=0, i;
+  for(i=0;i<hs.length;i++){ if(sanit(hs[i]).toLowerCase()===hl){ match=hs[i]; break; } }
+  if(match && hs.length>1){ CURHOST=match; $("hostSel").value=match; }
+  for(i=0;i<ROWS.length;i++){ var r=ROWS[i];
+    if(!match || r.host===match){ HOPEN[r.host+(r.coll?("|"+r.coll):"")]=1; n++; } }
+  if(!match && hs.length>1) setStatus("Scanned "+SCANROOT+" but no artifacts were attributed to "+hostDisp+" - showing all hosts.","err");
+  else setStatus("Host "+hostDisp+": "+nf(n)+" artifact"+(n===1?"":"s")+" - "+SCANROOT,"ok");
+  try{ $("results").scrollIntoView(); }catch(e){}
 }
 function invOpen(key){
   var sp=key.split("|"), host=sp[0], app=sp[1];
@@ -825,7 +901,7 @@ function startScan(){
   ], false);
   procStart("Scanning","Scan time");
   ctx.onTick=function(s){ setStatus("Enumerating files… "+s+"s","muted"); };
-  ctx.onTimeout=function(){ procStop(false); BUSY=false; $("scanBtn").disabled=false; setStatus("Enumeration still running after 30 min - aborted watching. Is the path a huge network share?","err"); };
+  ctx.onTimeout=function(){ procStop(false); PENDING_HOST=""; BUSY=false; $("scanBtn").disabled=false; setStatus("Enumeration still running after 30 min - aborted watching. Is the path a huge network share?","err"); };
   ctx.onDone=function(log){
     if(trimStr(log)) appendLog("dir stderr:\n"+log);
     var ok=false;
@@ -833,6 +909,7 @@ function startScan(){
     catch(e){ setStatus("Scan failed: "+e.message,"err"); appendLog("Scan failed: "+e.message); }
     try{ fso.DeleteFile(lst); }catch(e2){}
     procStop(ok);                         // after classify - the board build is the slow synchronous part
+    PENDING_HOST="";                      // a failed classify must not carry a host focus into the next scan
     BUSY=false; $("scanBtn").disabled=false;
   };
   window.setTimeout(function(){ pollDone(ctx); }, 500);
@@ -936,6 +1013,7 @@ function classify(lstPath){
   scanToolkitProcessed();
   renderInventory();
   guessHostField();
+  pendingHostField();                  // scan opened from an inventory host: that host names the output folder
   for(var r=0;r<ROWS.length;r++) computeStatus(ROWS[r]);
   sortRows();
   // multi-host scans start with host groups collapsed (tidy first paint); single host opens expanded
@@ -947,6 +1025,7 @@ function classify(lstPath){
   setStatus("Found "+nf(ROWS.length)+" artifacts across "+nf(distinctHosts().length)+" host(s) - "+nf(total)+" files scanned","ok");
   CURTYPE="all"; CURSTATUS="all"; CURHOST=""; QUERY=""; $("q").value="";
   populateHostFilter(); closeDetail();
+  focusHost();                         // no-op unless the scan was opened from an inventory host
   render();
   return true;
 }
@@ -1347,7 +1426,7 @@ function doProcess(row){
     try{ window.clipboardData.setData("Text", row.path); }catch(e){}
     try{ sh.Run('"'+mshtaExe()+'" "'+hta+'"',1,false); }
     catch(e2){ setStatus("Could not launch "+cat.wrapper+": "+e2.message,"err"); return; }
-    appendManifest({artifactPath:row.path, key:row.key, host:row.host, wrapper:cat.wrapper, outDir:"", launchedUtc:nowIso(), cmd:"(manual - no CLI yet)"});
+    appendManifest({artifactPath:row.path, key:row.key, host:row.host, wrapper:cat.wrapper, outDir:"", scanRoot:SCANROOT, launchedUtc:nowIso(), cmd:"(manual - no CLI yet)"});
     row.status="launch"; row.statusDate=nowIso().substring(0,16).replace("T"," ");
     setStatus(cat.wrapper+" opened - artifact path is on your clipboard; paste it into the tool's input box.","ok");
     appendLog("Launched (manual) "+cat.wrapper+" for "+row.path);
@@ -1384,7 +1463,7 @@ function launchCli(row, forceAuto){
   var cmd='"'+mshtaExe()+'" "'+hta+'" "'+row.path+'" "'+outDir+'"'+((forceAuto||$("optAuto").checked)?" /auto":"")+cw.args;
   try{ new ActiveXObject("WScript.Shell").Run(cmd,1,false); }
   catch(e3){ setStatus("Could not launch "+cat.wrapper+": "+e3.message,"err"); return false; }
-  var ment={artifactPath:row.path, key:row.key, host:row.host, hostUsed:host, app:appFor(cat), wrapper:cat.wrapper, outDir:outDir, launchedUtc:nowIso(), cmd:cmd};
+  var ment={artifactPath:row.path, key:row.key, host:row.host, hostUsed:host, app:appFor(cat), wrapper:cat.wrapper, outDir:outDir, scanRoot:SCANROOT, launchedUtc:nowIso(), cmd:cmd};
   if(cw.from) ment.winFrom=cw.from; if(cw.to) ment.winTo=cw.to;   // case window carried on the launch (filter only, never scored)
   appendManifest(ment);
   row.status="launch"; row.statusDate=nowIso().substring(0,16).replace("T"," "); row.lastOut=outDir;
@@ -1947,6 +2026,8 @@ function init(){
     if(t.getAttribute("data-iocnp")){ iocOpenNotepad(); return; }
     var pah=t.getAttribute("data-pah");
     if(pah!=null && pah!==""){ processAllHost(pah); return; }
+    var ih=t.getAttribute("data-invhost");
+    if(ih){ openHostBoard(ih); return; }
     var io=t.getAttribute("data-invopen");
     if(io){ invOpen(io); return; }
     var idr=t.getAttribute("data-invdir");
@@ -2151,7 +2232,7 @@ window.onload=function(){ init();
       <li>All processing lands in <code>_Processed\&lt;Hostname&gt;\&lt;App&gt;\</code> <b>next to this app</b> (family convention - the wrappers use the same layout when run standalone). One folder per host per tool; the tools' datetime-stamped filenames keep repeat runs apart.</li>
       <li><b>Target hostname</b> is required before processing. It is guessed from the scan (<code>Collection-&lt;host&gt;-…</code> segments or the folder layout) - overwrite it if wrong. Multi-host scans use each row's own detected host; the field covers rows whose host could not be derived.</li>
       <li>An append-only manifest (<code>_Processed\artifact-finder-manifest.json</code>) ties every launch to its exact artifact path, and each wrapper writes a <code>runinfo.json</code> into its output folder after every run - so processed state survives even if the manifest is lost. Old-convention output (<code>&lt;scanRoot&gt;\_Processed\&lt;Host&gt;_&lt;Artifact&gt;_&lt;stamp&gt;</code>) is still recognised for status and [Open], never written.</li>
-      <li>The <b>Processed inventory</b> card (shown before any scan) is the hosts &times; tools view of that tree across all cases - click a cell to reopen the newest output in its wrapper. Each cell also shows the tool's own <b>triage headline</b> from its newest run (flagged count / max score; Hayabusa crit/high) - red means findings; hover for the top hits; <b>Copy triage summary</b> puts the per-host block on the clipboard for case notes.</li>
+      <li>The <b>Processed inventory</b> card (shown before any scan) is the hosts &times; tools view of that tree across all cases - click a cell to reopen the newest output in its wrapper, or click a <b>host</b> to open its artifact board: the Finder recovers that host's evidence folder from its processed runs (the Velociraptor <code>Collection-&lt;host&gt;-…</code> folder, or the case folder for <code>&lt;case&gt;\&lt;HOST&gt;\…</code> layouts) and scans it, exactly as if you had pressed Scan. Each cell also shows the tool's own <b>triage headline</b> from its newest run (flagged count / max score; Hayabusa crit/high) - red means findings; hover for the top hits; <b>Copy triage summary</b> puts the per-host block on the clipboard for case notes.</li>
       <li><b>IOC list</b> (toolkit strip - create/edit) opens a structured editor: <code>IOC.csv</code> holds <b>Value / Type / Note / Case</b> and is the editable source; on save the Finder flattens it to <code>IOC.txt</code> (one term per line, <code>#</code> comments), the file every wrapper auto-loads at launch and merges into its own IOC/keyword scoring. Hash/IPv4 values are auto-typed; legacy <code>IOC.txt</code> terms are imported on first edit so nothing is lost. One paste covers the whole engagement.</li>
     </ul>
     <h3>Command line</h3>
