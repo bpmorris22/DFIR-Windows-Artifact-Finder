@@ -57,6 +57,9 @@
   header h1{display:inline-block;font-size:15px;margin:0;font-weight:600;vertical-align:middle}
   header h1 small{color:#8b949e;font-weight:400}
   .pill{display:inline-block;font-size:11px;color:#8b949e;border:1px solid #30363d;border-radius:20px;padding:2px 10px;margin-left:8px;vertical-align:middle}
+  .pill.ok{color:#7ee787;border-color:#2ea043}      /* green: finished */
+  .pill.run{color:#ff8b3d;border-color:#bd561d}     /* orange: a run is in progress */
+  .pill.err{color:#ff8b8b;border-color:#b02020}     /* red: the run timed out / produced nothing */
   .wrap{padding:12px 14px}
   .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:12px}
   .card h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e}
@@ -139,6 +142,7 @@
   <h1>DFIR Windows Artifact Finder <small>- scan a case folder, launch the right tool <span id="appver"></span></small></h1>
   <span class="pill" id="srcpill">no scan yet</span>
   <span style="float:right">
+    <span class="pill" id="procTimer" title="Scan time. Starts when a scan begins and stops once the board is built (file enumeration + classification + processed-state lookup), so you can see how long a big collection tree takes to scan. Parsing time is shown by each wrapper in its own window. The app is single-threaded, so the counter can pause during the classification step and then jump forward - that is the step blocking, not a stall." style="min-width:150px;text-align:center;display:inline-block">Idle</span>
     <button class="btn primary hide" id="selfUpd" onclick="doSelfUpdate()" title="A newer version is available on GitHub">Update</button>
     <button class="btn" id="instrBtn" onclick="openInstructions()" title="Download the latest HTML field guide from GitHub and open it in your browser">Instructions</button>
     <button class="btn" id="helpBtn" onclick="openHelp()" title="Help, about &amp; GitHub link">Help</button>
@@ -245,7 +249,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.15.7";
+var APP_VERSION = "0.15.8";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -397,6 +401,36 @@ function writeUtf8(path,text){
   }
   var fso=new ActiveXObject("Scripting.FileSystemObject");
   var f=fso.CreateTextFile(path,true,false); f.Write(text); f.Close();
+}
+
+/* ---------- scan-time pill (ported from vSphere Support Bundle Analyzer) ----------
+   A long scan of a big collection tree used to read as a hang: the status line ticks, but nothing
+   said how long the scan had taken or how long the previous one took. #procTimer lives in the header
+   and holds three states - Idle, an orange live counter while a scan runs, and a final green
+   "Scan time mm:ss" (red if the scan failed or the watchdog gave up). The finder never parses
+   artifacts - the wrappers time their own runs - so this pill times the scan only, and it stops
+   after classify() has built the board (the synchronous part), not when `dir` finishes. The HTA is
+   single-threaded, so the counter can freeze during classification and then jump; the pill tooltip
+   says so rather than letting it look broken. */
+var PROC_T0=0, PROC_TIMER=null, PROC_WHAT="Scanning", PROC_DONE="Scan time";
+function procFmt(s){ var m=Math.floor(s/60), ss=s%60; return (m<10?"0":"")+m+":"+(ss<10?"0":"")+ss; }
+function procStart(what, doneLabel){
+  PROC_WHAT=what||"Scanning"; PROC_DONE=doneLabel||"Scan time";
+  PROC_T0=(new Date()).getTime();
+  if(PROC_TIMER) window.clearInterval(PROC_TIMER);
+  PROC_TIMER=window.setInterval(procTick,500);
+  var el=$("procTimer"); if(el){ el.className="pill run"; el.innerHTML=PROC_WHAT+" 00:00"; }
+}
+function procTick(){ if(!PROC_T0) return; var el=$("procTimer"); if(!el) return;
+  el.innerHTML=PROC_WHAT+" "+procFmt(Math.floor(((new Date()).getTime()-PROC_T0)/1000)); }
+/* ok===false paints the stopped pill red so the header agrees with the error in the status line
+   instead of showing a reassuring green time for a scan that produced nothing. */
+function procStop(ok){
+  if(PROC_TIMER){ window.clearInterval(PROC_TIMER); PROC_TIMER=null; }
+  if(!PROC_T0) return;
+  var s=Math.floor(((new Date()).getTime()-PROC_T0)/1000), el=$("procTimer");
+  if(el){ el.className=(ok===false?"pill err":"pill ok"); el.innerHTML=PROC_DONE+" "+procFmt(s); }
+  PROC_T0=0;
 }
 
 /* ---------- process execution (async .bat + poll - same as siblings) ---------- */
@@ -775,13 +809,16 @@ function startScan(){
   var ctx=runBatAsync([
     'cmd /u /c dir "'+batEsc(root)+'" /s /b /a:-d > "'+lst+'" 2>> "__LOG__"'
   ], false);
+  procStart("Scanning","Scan time");
   ctx.onTick=function(s){ setStatus("Enumerating files… "+s+"s","muted"); };
-  ctx.onTimeout=function(){ BUSY=false; $("scanBtn").disabled=false; setStatus("Enumeration still running after 30 min - aborted watching. Is the path a huge network share?","err"); };
+  ctx.onTimeout=function(){ procStop(false); BUSY=false; $("scanBtn").disabled=false; setStatus("Enumeration still running after 30 min - aborted watching. Is the path a huge network share?","err"); };
   ctx.onDone=function(log){
     if(trimStr(log)) appendLog("dir stderr:\n"+log);
-    try{ classify(lst); }
+    var ok=false;
+    try{ ok=classify(lst); }
     catch(e){ setStatus("Scan failed: "+e.message,"err"); appendLog("Scan failed: "+e.message); }
     try{ fso.DeleteFile(lst); }catch(e2){}
+    procStop(ok);                         // after classify - the board build is the slow synchronous part
     BUSY=false; $("scanBtn").disabled=false;
   };
   window.setTimeout(function(){ pollDone(ctx); }, 500);
@@ -815,7 +852,7 @@ function attrib(p){
 function classify(lstPath){
   setStatus("Classifying…","muted");
   var fso=new ActiveXObject("Scripting.FileSystemObject");
-  if(!fso.FileExists(lstPath)){ setStatus("Enumeration produced no listing - check the log","err"); return; }
+  if(!fso.FileExists(lstPath)){ setStatus("Enumeration produced no listing - check the log","err"); return false; }
   var groups={}, total=0, skipped=0, badLines=0;
   PROCCSV=[]; LEGACY={};
   var csvLines=[];
@@ -892,6 +929,7 @@ function classify(lstPath){
   CURTYPE="all"; CURSTATUS="all"; CURHOST=""; QUERY=""; $("q").value="";
   populateHostFilter(); closeDetail();
   render();
+  return true;
 }
 function finishRow(g){
   // artifact label; sizes only for reasonably-sized rows (never stat 100k files)
@@ -1774,11 +1812,30 @@ function init(){
   renderToolStrip();
   scanToolkitProcessed(); renderInventory();   // processed inventory is available before any scan
 
-  // A± zooms #content only - zooming <body> made the header (and these buttons)
-  // slide off-screen (which is what happened when body-zoom widened the header past the window edge).
+  // A± never zooms <body> - that widened the header past the window edge and slid these buttons
+  // off-screen. Each block is zoomed and width-compensated on its own instead (below).
   var zoom=0.9, zContent=$("content");
-  function applyZoom(){ zContent.style.zoom=zoom; zContent.style.width=(100/zoom)+"%"; var p=Math.round(zoom*100)+"%";
+  /* A+ / A- text scaling. <header> and the modal cards live OUTSIDE #content, so zooming #content
+     alone left the app's top row - and the Help dialog - at a fixed size while everything else grew
+     or shrank. Each block is zoomed and then widened by 1/zoom, because a zoom<1 shrinks a 100%-wide
+     block to less than the viewport and leaves a blank gutter down the right edge. For the modals the
+     CARD is scaled and not the fixed overlay, so the dim backdrop still covers the whole viewport at
+     any zoom level. (Ported from vSphere Support Bundle Analyzer.) */
+  function zoomBlock(el){ if(!el) return; el.style.zoom=zoom; el.style.width=(100/zoom)+"%"; el.style.boxSizing="border-box"; }
+  var ZOOM_MODALS=["helpModal","iocModal"];
+  function applyZoom(){
+    zoomBlock(zContent);
+    var hs=document.getElementsByTagName("header"); if(hs.length) zoomBlock(hs[0]);
+    for(var mi=0;mi<ZOOM_MODALS.length;mi++){ var m=$(ZOOM_MODALS[mi]); if(!m) continue;
+      var cards=m.getElementsByTagName("div");
+      for(var ci=0;ci<cards.length;ci++){ if(/(^|\s)mcard(\s|$)/.test(cards[ci].className+"")){ cards[ci].style.zoom=zoom; break; } } }
+    var p=Math.round(zoom*100)+"%";
     $("fup").title="Larger text ("+p+")"; $("fdown").title="Smaller text ("+p+")"; }
+  applyZoom();
+  /* re-assert the zoom-compensated widths on resize/maximise, so full-screening reflows to fill;
+     the header needs it too now that it is zoomed alongside #content. */
+  try{ window.onresize=function(){ try{ zContent.style.width=(100/zoom)+"%";
+    var hr=document.getElementsByTagName("header"); if(hr.length) hr[0].style.width=(100/zoom)+"%"; }catch(er){} }; }catch(eR){}
   $("fup").onclick=function(){ zoom=Math.min(zoom+0.15,2.5); applyZoom(); };
   $("fdown").onclick=function(){ zoom=Math.max(zoom-0.15,0.6); applyZoom(); };
 
