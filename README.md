@@ -9,6 +9,7 @@ It never opens or parses artifact contents itself - it is a **scanner + registry
 | Artifact | Launches |
 |---|---|
 | Windows event logs (`.evtx`) | [Hayabusa-Wrapper](https://github.com/bpmorris22/Hayabusa-Wrapper) |
+| Logon activity - the same `.evtx` folder (logons, RDP, PsExec / WinRM / WMI / remote tasks, RMM tools) | [Login Activity Triage](https://github.com/bpmorris22/LoginActivityTriage) |
 | Prefetch (`.pf`) | [PECmd-Wrapper](https://github.com/bpmorris22/PECmd-Wrapper) |
 | `Amcache.hve` | [AmcacheParser-Wrapper](https://github.com/bpmorris22/AmcacheParser-Wrapper) |
 | SRUM (`SRUDB.dat`) | [SrumECmd-Wrapper](https://github.com/bpmorris22/SrumECmd-Wrapper) |
@@ -36,9 +37,9 @@ A single-file **[Field Manual](docs/DFIR-Toolkit-Manual.html)** for the whole to
    ```
    mshta.exe "<Tool>-Wrapper.hta" "<artifactPath>" "<outDir>" [/auto]
    ```
-   The wrapper opens in its own window so you can review and start processing there. An opt-in **bulk** checkbox adds `/auto` (process immediately) for launch-many sessions - default **off**. **Process all (N)** on a host's header row queues every unprocessed tool-ready artifact of that host with `/auto` - one launch every 3 seconds - so a fresh collection goes from scanned to fully processing in one click.
+   The wrapper opens in its own window so you can review and start processing there. Every event-log folder gets **two rows** - **Event logs** (Hayabusa Sigma timeline) and **Logon activity** ([Login Activity Triage](https://github.com/bpmorris22/LoginActivityTriage): who logged on, from where and how, stitched remote sessions, MITRE-mapped findings) - each with its own status and output folder. Login Activity Triage is an HTA over `LoginActivityTriageCli.exe` (.NET 8+ runtime); the finder downloads the `.hta` and the engine together from its latest GitHub release, and fetches the engine before a launch if it is missing next to the copy being launched. An opt-in **bulk** checkbox adds `/auto` (process immediately) for launch-many sessions - default **off**. **Process all (N)** on a host's header row queues every unprocessed tool-ready artifact of that host with `/auto` - one launch every 3 seconds - so a fresh collection goes from scanned to fully processing in one click.
 3. **Skip what's done** - outputs land in `_Processed\<Hostname>\<App>\` **next to this app** (the mandatory **Target hostname** field names the folder - guessed from the scan, overwrite it if wrong; the wrappers use the same layout when run standalone), and an append-only manifest ties runs back to exact artifact paths, so already-processed evidence shows as **done** on the next scan and isn't re-run by accident. **Open** on a processed row loads the newest output straight back into its wrapper - no reprocessing. Old-convention output (`<scanRoot>\_Processed\<Host>_<Artifact>_<stamp>\`) is still recognised, never written.
-4. **Processed inventory** - a hosts × tools grid over `_Processed`, shown before any scan: newest output date (file count) per host per tool across all cases. Click a cell to reopen the newest output in its wrapper; `dir` opens the folder. Each cell also carries the tool's own **triage headline** from its newest run - flagged count / max score (red when there are findings, hover for the top hits; Hayabusa shows crit/high counts, SRUM adds MB sent) - and **Copy triage summary** puts a per-host plain-text block on the clipboard for case notes. Wrappers append a `runinfo.json` provenance entry (now including that summary) after every run, so even standalone runs show up bound to their exact source artifact.
+4. **Processed inventory** - a hosts × tools grid over `_Processed`, shown before any scan: newest output date (file count) per host per tool across all cases. Click a cell to reopen the newest output in its wrapper; `dir` opens the folder. Each cell also carries the tool's own **triage headline** from its newest run - flagged count / max score (red when there are findings, hover for the top hits; Hayabusa shows crit/high counts, Login Activity Triage crit/high findings plus remote sessions, SRUM adds MB sent) - and **Copy triage summary** puts a per-host plain-text block on the clipboard for case notes. Wrappers append a `runinfo.json` provenance entry (now including that summary) after every run, so even standalone runs show up bound to their exact source artifact.
 5. **Shared IOC list** - a structured editor (open it from the toolkit strip) keeps `IOC.csv` next to this app with **Value / Type / Note / Case** per indicator; hash and IPv4 values are auto-typed, and any legacy `IOC.txt` terms are imported on first edit so nothing is lost. On save the finder flattens the values to `IOC.txt` - one term per line, `#` comments - which every wrapper auto-loads at launch. So the whole engagement is one typed, annotated, case-attributed list, and the wrappers still read the same simple wire format.
 
 ## Quick start
@@ -60,7 +61,7 @@ The last scan root is remembered in a `DFIR-Artifact-Finder.settings.json` sidec
 
 ## Notes & limitations
 
-- **Windows only** - needs `mshta.exe` (present on every Windows box). The wrappers it launches are their own single-file `.hta` tools.
+- **Windows only** - needs `mshta.exe` (present on every Windows box). The wrappers it launches are their own single-file `.hta` tools; Login Activity Triage also needs the .NET 8+ runtime for its engine.
 - **Never opens evidence** - it only lists, registers, and launches; parsing happens inside each wrapper.
 - **Velociraptor paths** with URL-encoded `%` (`C%3A`, `%5C`) are handled - launches go through `WScript.Shell.Run` (no `cmd` expansion), and anything written to a batch file is `%`-escaped.
 - **Network case folders** (mapped drive / UNC) work; the UTF-8 file reader falls back to ANSI in the restricted zone automatically.
@@ -68,7 +69,7 @@ The last scan root is remembered in a `DFIR-Artifact-Finder.settings.json` sidec
 
 ## Credits
 
-- Drives the excellent DFIR parsers by [Eric Zimmerman](https://ericzimmerman.github.io/) (PECmd, AmcacheParser, MFTECmd, SrumECmd, SQLECmd) and [Yamato Security's Hayabusa](https://github.com/Yamato-Security/hayabusa) - via the unaffiliated wrapper family listed above. All parsing credit is theirs.
+- Drives the excellent DFIR parsers by [Eric Zimmerman](https://ericzimmerman.github.io/) (PECmd, AmcacheParser, MFTECmd, SrumECmd, SQLECmd) and [Yamato Security's Hayabusa](https://github.com/Yamato-Security/hayabusa) - via the unaffiliated wrapper family listed above. All parsing credit is theirs. Login Activity Triage is the family's own EVTX engine.
 
 ## License
 

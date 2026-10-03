@@ -19,7 +19,9 @@
   SELECTION="yes" />
 <!--
   DFIR-Windows-Artifact-Finder - master triage launcher for the wrapper family
-  (Hayabusa / PECmd / AmcacheParser / MFTECmd / SrumECmd / SumECmd / RBCmd / SQLECmd wrappers, github.com/bpmorris22/*).
+  (Hayabusa / PECmd / AmcacheParser / MFTECmd / SrumECmd / SumECmd / RBCmd / SQLECmd / LECmd / JLECmd / RECmd
+  wrappers + Login Activity Triage, github.com/bpmorris22/*). EVTX folders feed two tools: Hayabusa (Sigma
+  detections) and LoginActivityTriage.hta (logons / RDP / lateral movement over LoginActivityTriageCli.exe).
 
   Scans a case folder (Velociraptor / KAPE collection trees) with `dir /s /b` (FSO recursion dies on the
   long paths these trees produce), classifies every file against the artifact catalog, and presents a
@@ -197,7 +199,7 @@
       Everything under <span class="mono">_Processed</span> next to this app - newest output date (file count) per host per tool,
       across all cases. Click a cell to open the newest output in its wrapper; <span class="mono">dir</span> opens the folder.
       The <span class="sumbad">&#9873; red</span> / <span class="sumok">green</span> line is the tool's own triage headline
-      (flagged / max score, or Hayabusa crit/high) from the newest run - hover for the top hits.
+      (flagged / max score, or crit/high for Hayabusa and Login Activity Triage) from the newest run - hover for the top hits.
     </div>
   </div>
 
@@ -249,7 +251,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.15.8";
+var APP_VERSION = "0.16.0";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -297,10 +299,19 @@ var DRAG = null;                      // active column-drag state
    tier C = wrapper:"" (no tool yet - greyed, roadmap)
    hidden:true = parked - detected but never displayed (not even via the roadmap checkbox); delete the flag to re-enable
    gran: "folder" (group matches by parent dir) | "file" (one row per file) | "host" (one aggregate row per host+collection)
+   also:"<key>" = no classifier rule of its own - every file matching <key> ALSO feeds this entry, so one
+                  EVTX folder yields a Hayabusa row AND a Login Activity row (same path, own status/output)
+   rel:true     = download from the repo's latest GitHub Release assets first (raw main/master is the fallback)
+   sub:"dir/"   = the .hta lives in that subfolder of its repo (raw fallback + sibling dev-folder lookup)
+   extras:[...] = companion release assets the tool needs beside its .hta (an engine exe) - fetched with the
+                  .hta, and again before a launch if missing next to the copy being launched
 */
 var CATALOG = [
   {key:"evtx",    name:"Event logs",    outKey:"EventLogs", gran:"folder", wrapper:"Hayabusa-Wrapper",      repo:"Hayabusa-Wrapper",      cli:true,
    desc:"Windows event logs - Sigma detection timeline via Hayabusa"},
+  {key:"logon",   name:"Logon activity",outKey:"LoginActivity",gran:"folder",wrapper:"LoginActivityTriage", repo:"LoginActivityTriage",   cli:true,
+   also:"evtx", rel:true, sub:"hta/", extras:["LoginActivityTriageCli.exe"],
+   desc:"Same EVTX folder - logons, RDP & lateral movement (PsExec / WinRM / WMI / remote tasks / RMM), stitched remote sessions + MITRE findings via Login Activity Triage"},
   {key:"pf",      name:"Prefetch",      outKey:"Prefetch",  gran:"folder", wrapper:"PECmd-Wrapper",         repo:"PECmd-Wrapper",         cli:true,
    desc:"Execution evidence (.pf) - parsed with PECmd"},
   {key:"amcache", name:"Amcache",       outKey:"Amcache",   gran:"file",   wrapper:"AmcacheParser-Wrapper", repo:"AmcacheParser-Wrapper", cli:true,
@@ -328,8 +339,9 @@ var CATALOG = [
   {key:"webc",    name:"WebCache",      outKey:"WebCache",  gran:"file",   wrapper:"", repo:"", cli:false, hidden:true,
    desc:"IE/Edge legacy WebCache ESE DB - wrapper planned"}   // parked per operator 2026-07-06 (spec drafted, inclusion TBD)
 ];
-var CATBYKEY = {};
-(function(){ for(var i=0;i<CATALOG.length;i++) CATBYKEY[CATALOG[i].key]=CATALOG[i]; })();
+var CATBYKEY = {}, ALSO = {};         // ALSO: classifier key -> catalog keys fed by the same files (also:)
+(function(){ for(var i=0;i<CATALOG.length;i++){ var c=CATALOG[i]; CATBYKEY[c.key]=c;
+  if(c.also) (ALSO[c.also]||(ALSO[c.also]=[])).push(c.key); } })();
 
 var SQLITE_CURATED = {"history":1,"web data":1,"cookies":1,"login data":1,"places.sqlite":1,"activitiescache.db":1,"downloads.sqlite":1};
 var REG_ROOT = {"system":1,"software":1,"sam":1,"security":1,"default":1};
@@ -697,7 +709,8 @@ function newestSummary(hostL, appL){
 }
 function sumText(s){
   if(!s) return "";
-  if(s.detections!=null) return (s.crit||0)+" crit / "+(s.high||0)+" high · "+nf(s.detections)+" detections";
+  if(s.detections!=null) return (s.crit||0)+" crit / "+(s.high||0)+" high · "+nf(s.detections)
+    +(s.sessions!=null?(" findings · "+nf(s.sessions)+" remote sessions"):" detections");   // Login Activity Triage also counts stitched sessions
   if(s.entries!=null) return (s.flagged||0)+" flagged of "+nf(s.entries)+(s.maxScore?(" (max "+s.maxScore+")"):"")
     +(s.bytesOutMB!=null?(" · "+nf(s.bytesOutMB)+" MB out"):"");   // SrumECmd exfil headline
   return "";
@@ -707,7 +720,8 @@ function sumBadge(s){
   if(!s) return "";
   var hot=sumHot(s)>0, tip=(s.top&&s.top.length)?(" - top: "+s.top.join(", ")):"";
   if(s.detections!=null)
-    return '<div class="'+(hot?"sumbad":"sumok")+'" title="'+esc(sumText(s)+tip)+'">'+(s.crit||0)+'C/'+(s.high||0)+'H &middot; '+nf(s.detections)+' det</div>';
+    return '<div class="'+(hot?"sumbad":"sumok")+'" title="'+esc(sumText(s)+tip)+'">'+(s.crit||0)+'C/'+(s.high||0)+'H &middot; '+nf(s.detections)+' det'
+      +(s.sessions!=null?(' &middot; '+nf(s.sessions)+' sess'):'')+'</div>';
   return '<div class="'+(hot?"sumbad":"sumok")+'" title="'+esc(sumText(s)+tip)+'">&#9873; '+(s.flagged||0)+'/'+nf(s.entries)+(s.maxScore?(' &middot; max '+s.maxScore):'')+'</div>';
 }
 function renderInventory(){
@@ -718,11 +732,11 @@ function renderInventory(){
   for(var r=0;r<mdl.hlist.length;r++){ var hl2=mdl.hlist[r], hostHot=0;
     var tds='';
     for(i=0;i<mdl.used.length;i++){ var al3=mdl.used[i].toLowerCase(), cell=mdl.inv[hl2+"|"+al3];
-      var ref=esc(mdl.hostDisp[hl2])+'|'+esc(mdl.used[i]);
+      var ref=esc(mdl.hostDisp[hl2])+'|'+esc(mdl.used[i]), ic=catForApp(mdl.used[i]);
       var s=cell?newestSummary(hl2,al3):null;
       hostHot+=sumHot(s);
       tds+='<td>'+(cell
-        ?('<span class="lnk" data-invopen="'+ref+'" title="Open the newest output in '+esc(mdl.used[i])+'-Wrapper">'+esc(cell.mtime||"?")+' ('+cell.n+')</span> <span class="lnk muted" data-invdir="'+ref+'" title="Open this folder in Explorer">dir</span>'+sumBadge(s))
+        ?('<span class="lnk" data-invopen="'+ref+'" title="Open the newest output in '+esc(ic?ic.wrapper:mdl.used[i])+'">'+esc(cell.mtime||"?")+' ('+cell.n+')</span> <span class="lnk muted" data-invdir="'+ref+'" title="Open this folder in Explorer">dir</span>'+sumBadge(s))
         :'<span class="muted">-</span>')+'</td>'; }
     rows+='<tr><td><b>'+esc(mdl.hostDisp[hl2])+'</b>'+(hostHot>0?(' <span class="sumbad" title="Flagged / critical+high findings across this host\'s processed tools">&#9873; '+hostHot+'</span>'):'')+'</td>'+tds+'</tr>';
   }
@@ -887,21 +901,26 @@ function classify(lstPath){
     else if(/\.(automaticdestinations-ms|customdestinations-ms)$/.test(base)){ key="jump"; }
     else if(/\.(sqlite|sqlite3)$/.test(base)){ key="sqlx"; }
     if(!key) continue;
-    var cat=CATBYKEY[key];
-    if(cat.hidden){ skipped++; continue; }   // parked artifact types - never become rows
-    gran=cat.gran;
-    var at=attrib(p);
-    var gpath, gkey;
-    if(gran==="folder"){ gpath=parentDir(p); gkey=key+"|"+gpath.toLowerCase(); }
-    else if(gran==="file"){ gpath=p; gkey=key+"|"+low; }
-    else { // host aggregate: anchor at the host's top folder under the scan root (or the root itself)
-      var segs0=relPath(p).split("\\");
-      gpath=(segs0.length>1)?(SCANROOT+"\\"+segs0[0]):SCANROOT;
-      gkey=key+"|"+at.host.toLowerCase()+"|"+at.coll.toLowerCase(); }
-    var g=groups[gkey];
-    if(!g){ g=groups[gkey]={key:key, cat:cat, path:gpath, host:at.host, coll:at.coll, files:0, bytes:0, entries:[]}; }
-    g.files++;
-    if(g.entries.length<5000) g.entries.push(p);
+    // one file can feed several catalog entries (also:) - e.g. an .evtx → Hayabusa AND Login Activity
+    var keys=ALSO[key]?[key].concat(ALSO[key]):[key], at=attrib(p), fed=0;
+    for(var ki=0;ki<keys.length;ki++){
+      var cat=CATBYKEY[keys[ki]];
+      if(cat.hidden) continue;                 // parked artifact types - never become rows
+      fed++;
+      gran=cat.gran;
+      var gpath, gkey;
+      if(gran==="folder"){ gpath=parentDir(p); gkey=cat.key+"|"+gpath.toLowerCase(); }
+      else if(gran==="file"){ gpath=p; gkey=cat.key+"|"+low; }
+      else { // host aggregate: anchor at the host's top folder under the scan root (or the root itself)
+        var segs0=relPath(p).split("\\");
+        gpath=(segs0.length>1)?(SCANROOT+"\\"+segs0[0]):SCANROOT;
+        gkey=cat.key+"|"+at.host.toLowerCase()+"|"+at.coll.toLowerCase(); }
+      var g=groups[gkey];
+      if(!g){ g=groups[gkey]={key:cat.key, cat:cat, path:gpath, host:at.host, coll:at.coll, files:0, bytes:0, entries:[]}; }
+      g.files++;
+      if(g.entries.length<5000) g.entries.push(p);
+    }
+    if(!fed) skipped++;
   }
   ts.Close();
   // rows
@@ -1101,6 +1120,8 @@ function resolveWrapper(cat){
       cands.push(sf+"\\"+fn);                    // dev folder root
       cands.push(sf+"\\publish\\"+fn);           // clean push repo convention
       cands.push(sf+"\\repo\\"+fn);              // git working copy convention
+      if(cat.sub){ var sd=cat.sub.replace(/[\\\/]+$/,"").replace(/\//g,"\\");   // .hta kept in a repo subfolder (LoginActivityTriage: hta\)
+        cands.push(sf+"\\"+sd+"\\"+fn); cands.push(sf+"\\repo\\"+sd+"\\"+fn); }
     }
   }catch(er){}
   var best="", bestVer="";
@@ -1352,6 +1373,9 @@ function launchCli(row, forceAuto){
     hta=WPATH[cat.wrapper]||"";
     if(!hta){ setStatus("Could not resolve "+cat.wrapper+".hta - see log.","err"); return false; }
   }
+  var miss=extrasMissing(cat, hta);                    // e.g. the engine exe beside LoginActivityTriage.hta
+  if(miss.length && !getExtras(cat, parentDir(hta), miss))
+    appendLog(cat.wrapper+": "+miss.join(", ")+" still missing next to "+hta+" - launching anyway; the tool reports it and offers its own download.");
   var host=hostFor(row);
   if(!host){ appendLog("Skipped (no hostname): "+row.path); return false; }
   var outDir=TOOLDIR+"\\_Processed\\"+host+"\\"+appFor(cat);
@@ -1474,6 +1498,9 @@ function pickOpenTarget(row,dir){
   if(row.key==="jump"){                                        // jump lists: open on Automatic; the JLECmd wrapper auto-pairs the Custom sibling
     var ja=[]; for(i=0;i<csv.length;i++){ if(/_AutomaticDestinations\.csv$/i.test(csv[i].name)) ja.push(csv[i]); }
     if(ja.length) pick=newest(ja); }
+  if(row.key==="logon"){                                       // Login Activity Triage: any results CSV loads the whole folder - open on the findings
+    var lf=[]; for(i=0;i<csv.length;i++){ if(/^findings\.csv$/i.test(csv[i].name)) lf.push(csv[i]); }
+    if(lf.length) pick=newest(lf); }
   if(row.key==="srum"){                                        // SRUM: the exfil table is the headline
     var su=[]; for(i=0;i<csv.length;i++){ if(/networkusage/i.test(csv[i].name)) su.push(csv[i]); }
     if(su.length) pick=newest(su); }
@@ -1496,18 +1523,47 @@ function openProcessed(row){
   if(!target){ setStatus("No processed output found for this artifact - rescan first, or [Re-process] it.","err"); return; }
   openTargetInWrapper(cat, target);
 }
+/* ---------- companion files (catalog extras) ----------
+   Login Activity Triage is an HTA front end over LoginActivityTriageCli.exe; the HTA alone cannot
+   process. A companion counts as present next to the .hta or in its .\bin (where that tool looks
+   first). Companions always come from the latest GitHub Release, so they match the release .hta. */
+function relUrl(cat, file){ return "https://github.com/bpmorris22/"+cat.repo+"/releases/latest/download/"+file; }
+function extrasMissing(cat, hta){
+  var out=[]; if(!cat.extras || !hta) return out;
+  var d=parentDir(hta);
+  for(var i=0;i<cat.extras.length;i++){ var x=cat.extras[i];
+    if(!fileExists(d+"\\"+x) && !fileExists(d+"\\bin\\"+x)) out.push(x); }
+  return out;
+}
+function getExtras(cat, dir, list){
+  var ok=true;
+  for(var i=0;i<list.length;i++){
+    setStatus("Downloading "+list[i]+" for "+cat.wrapper+"…","muted");
+    var r=psDownload([relUrl(cat,list[i])], dir+"\\"+list[i], true);
+    appendLog("--- download "+list[i]+" ---\n"+r.log);
+    if(!(r.ok && fileExists(dir+"\\"+list[i]))) ok=false;
+  }
+  return ok;
+}
 function getTool(cat,auto){
   if(!cat.repo){ setStatus("No download source for "+cat.name,"err"); return false; }
   var dest=wrapperPath(cat);
-  var fn=cat.wrapper+".hta";
-  if(!auto && !confirm("Download "+fn+" from github.com/bpmorris22/"+cat.repo+"\ninto\n"+TOOLDIR+" ?")) return false;
+  var fn=cat.wrapper+".hta", ex=cat.extras||[];
+  if(!auto && !confirm("Download "+fn+(ex.length?(" + "+ex.join(" + ")):"")+" from github.com/bpmorris22/"+cat.repo+"\ninto\n"+TOOLDIR+" ?")) return false;
   setStatus("Downloading "+cat.wrapper+"…","muted");
-  // repos are split across default branches (PECmd/AmcacheParser=master, the rest=main) - try both
-  var r=psDownload([GH_RAW+cat.repo+"/main/"+fn, GH_RAW+cat.repo+"/master/"+fn], dest, true);
+  // repos are split across default branches (PECmd/AmcacheParser=master, the rest=main) - try both;
+  // rel:true tools try their latest Release asset first, so the .hta matches the engine fetched below
+  var sub=cat.sub||"", urls=[];
+  if(cat.rel) urls.push(relUrl(cat,fn));
+  urls.push(GH_RAW+cat.repo+"/main/"+sub+fn, GH_RAW+cat.repo+"/master/"+sub+fn);
+  var r=psDownload(urls, dest, true);
   appendLog("--- download "+cat.wrapper+" ---\n"+r.log);
   if(r.ok && fileExists(dest)){
+    var exOk=ex.length?getExtras(cat, TOOLDIR, ex):true;   // always refreshed with the .hta - an update keeps the pair in step
     if(WRESOLVED) delete WRESOLVED[cat.wrapper];   // re-resolve: the fresh toolkit copy may now be the newest candidate
-    setStatus(cat.wrapper+".hta installed"+(auto?".":" - click Process again."),"ok"); renderToolStrip(); render();
+    if(exOk) setStatus(cat.wrapper+".hta installed"+(ex.length?(" with "+ex.join(" + ")):"")+(auto?".":" - click Process again."),"ok");
+    else setStatus(cat.wrapper+".hta installed, but "+ex.join(" / ")+" did not download (see log) - the tool can fetch it itself (Download engine).","err");
+    renderToolStrip(); render();
     return true;
   } else {
     setStatus("Download failed (offline, or the repo isn't published yet). Place "+cat.wrapper+".hta next to this app manually.","err");
@@ -1523,6 +1579,7 @@ function renderToolStrip(){
     WPATH[c.wrapper]=p;
     var local=p && parentDir(p).toLowerCase()===TOOLDIR.toLowerCase();
     var wv=WVER[c.wrapper], stale=!!(p && wv && wv.stale);   // GitHub release newer than the copy we'd launch
+    var exMiss=p?extrasMissing(c,p):[];
     var tkCls = p ? (stale?"have stale":"have") : "miss";
     var tip = p ? (stale?(c.wrapper+" v"+(wv.local||"?")+" installed - v"+wv.latest+" available on GitHub"):p)
                 : "not found next to this app or in sibling dev folders";
@@ -1531,6 +1588,7 @@ function renderToolStrip(){
       +(p?((stale?(' <span class="muted">v'+esc(wv.local||"?")+'</span>'):" &#10004;")+(local?"":' <span class="muted">(dev folder)</span>')):" missing")
       +(p?(stale?(' <span class="lnk upd" data-upd="'+esc(c.key)+'" title="Download v'+esc(wv.latest)+' from GitHub and replace the copy next to this app">update &#8594; v'+esc(wv.latest)+'</span>'):"")
          :(' <span class="lnk" data-get="'+esc(c.key)+'">get</span>'))
+      +(exMiss.length?(' <span class="muted" title="'+esc(exMiss.join(", ")+" not found next to "+p+" (or in its bin\\) - downloaded from the GitHub release on the first Process")+'">('+esc(exMiss.join(", "))+' missing)</span>'):'')
       +(c.cli?'':' <span class="muted" title="CLI retrofit pending - Process opens it bare with the path on your clipboard">(manual)</span>')+'</span>';
   }
   /* shared IOC list - IOC.csv is the editable source; every wrapper auto-loads the flattened IOC.txt at launch */
@@ -2085,6 +2143,8 @@ window.onload=function(){ init();
       <li>Pick a case folder &rarr; <b>Scan</b>. Confirm the <b>Target hostname</b> guess (it names the output folders). Click <b>[Process]</b> on a row, review inside the wrapper, run it, rescan to see &#10004;.</li>
       <li><b>Process all (N)</b> on a host's header row queues every unprocessed tool-ready artifact of that host with <code>/auto</code> - one launch every 3 seconds, each in its own wrapper window. Come back and rescan when the consoles are done.</li>
       <li><b>[Open]</b> on a processed row hands the newest output straight back to the wrapper - no reprocessing.</li>
+      <li>Every event-log folder gets <b>two rows</b>: <b>Event logs</b> &rarr; Hayabusa-Wrapper (Sigma detection timeline) and <b>Logon activity</b> &rarr; <b>Login Activity Triage</b> (who logged on, from where, how - RDP, PsExec, WinRM, WMI, remote tasks, RMM tools - with stitched remote sessions and MITRE-mapped findings). Each has its own status, output folder and [Process]/[Open].</li>
+      <li>Login Activity Triage is an HTA over <code>LoginActivityTriageCli.exe</code> (needs the .NET 8+ runtime). <b>Get tool</b> downloads the <code>.hta</code> and the engine together from its latest GitHub release; if the engine is missing next to the copy being launched, <b>[Process]</b> fetches it first.</li>
     </ul>
     <h3>Where outputs go</h3>
     <ul>
@@ -2099,7 +2159,7 @@ window.onload=function(){ init();
     <ul>
       <li><code>&lt;scanRoot&gt;</code> - prefills the case folder. &nbsp; <code>/scan</code> - scan immediately on open.</li>
       <li><code>/from:yyyy-MM-dd</code> <code>/to:yyyy-MM-dd</code> - prefills the <b>Case window</b> (UTC). It rides on every wrapper launch as <code>/from:/to:</code>, prefilling the wrapper's date filter; it is recorded in the manifest and runinfo and <b>never affects scoring</b>.</li>
-      <li>Wrappers are launched as <code>mshta "&lt;Tool&gt;-Wrapper.hta" "&lt;artifact&gt;" "&lt;outDir&gt;" [/auto] [/from:…] [/to:…]</code> - <b>bulk mode</b> adds <code>/auto</code> so they process on open; the <b>Case window</b> (if set) adds <code>/from:/to:</code>.</li>
+      <li>Wrappers are launched as <code>mshta "&lt;Tool&gt;-Wrapper.hta" "&lt;artifact&gt;" "&lt;outDir&gt;" [/auto] [/from:…] [/to:…]</code> - <b>bulk mode</b> adds <code>/auto</code> so they process on open; the <b>Case window</b> (if set) adds <code>/from:/to:</code>. Login Activity Triage takes the same arguments (<code>LoginActivityTriage.hta "&lt;evtxFolder&gt;" "&lt;outDir&gt;"</code>) and writes to <code>_Processed\&lt;host&gt;\LoginActivityTriage\</code>.</li>
     </ul>
     <h3>Notes</h3>
     <ul>
