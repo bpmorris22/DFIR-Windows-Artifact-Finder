@@ -254,7 +254,7 @@
 <script language="JScript">
 "use strict";
 
-var APP_VERSION = "0.18.0";
+var APP_VERSION = "0.18.1";
 var GH_RAW = "https://raw.githubusercontent.com/bpmorris22/";       // + <repo>/main/<file>
 
 /* boot/error trace - survives a crash where the UI can't be seen; overwritten each launch */
@@ -972,6 +972,9 @@ function classify(lstPath){
     if(/\.csv$/.test(low)) csvLines.push(p);
     var base=baseName(low);
     var key="", gran="";
+    // $UsnJrnl:$Max is the journal's 32-byte config stream (max size / delta / journal ID) collected beside
+    // $J - no events, and MFTECmd rejects it ("Unknown file type"): a sidecar of the $J row, never a row itself
+    if(base==="$max" || (base.indexOf("$usnjrnl")>=0 && /\$max$/.test(base))){ skipped++; continue; }
     // path-scoped first (so extension rules don't steal recycle-bin contents)
     if(low.indexOf("\\$recycle.bin\\")>=0){ key="rbin"; }
     // Task Scheduler store (task XML is extensionless; legacy Windows\Tasks holds .job files) - path-scoped like the bin
